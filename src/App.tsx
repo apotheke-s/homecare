@@ -16,7 +16,9 @@ import {
   ClipboardCheck,
   Home,
   Menu,
+  MessageSquareText,
   Package,
+  Pill,
   Plus,
   Save,
   Search,
@@ -25,9 +27,21 @@ import {
   UserRound,
   UsersRound
 } from "lucide-react";
-import { addDays, format } from "date-fns";
+import { addDays, eachDayOfInterval, format, parseISO } from "date-fns";
 import { db, seedSampleData } from "./db";
-import type { Checklist, Patient, PatientFormValues, Task, TaskType, Visit } from "./types";
+import type {
+  Checklist,
+  MedicationCalendar,
+  MedicationCalendarAudit,
+  MedicationCalendarDay,
+  MedicationCalendarStatus,
+  MedicationTiming,
+  Patient,
+  PatientFormValues,
+  Task,
+  TaskType,
+  Visit
+} from "./types";
 import {
   calcNextRefillDate,
   createId,
@@ -46,6 +60,41 @@ type AppData = {
   visits: Visit[];
   tasks: Task[];
   checklists: Checklist[];
+  medicationCalendars: MedicationCalendar[];
+  medicationCalendarDays: MedicationCalendarDay[];
+  medicationCalendarAudits: MedicationCalendarAudit[];
+};
+
+type PatientDetailTab = "basic" | "schedule" | "tasks" | "checklist" | "medication";
+
+const medicationTimingLabels: Record<MedicationTiming, string> = {
+  morning: "朝",
+  noon: "昼",
+  evening: "夕",
+  bedtime: "寝る前",
+  wakeup: "起床時",
+  asNeeded: "頓服",
+  external: "外用"
+};
+
+const medicationCoreTimings: MedicationTiming[] = ["morning", "noon", "evening", "bedtime"];
+
+const medicationAuditChecks: Array<[keyof MedicationCalendarAudit, string]> = [
+  ["dateChecked", "日付が正しい"],
+  ["usageChecked", "用法が正しい"],
+  ["countChecked", "薬包数が正しい"],
+  ["duplicateChecked", "重複がない"],
+  ["missingChecked", "抜けがない"],
+  ["temporaryMedicineChecked", "臨時薬が反映されている"],
+  ["stoppedMedicineChecked", "中止薬が除外されている"],
+  ["remainingAdjustmentChecked", "残薬調整が反映されている"]
+];
+
+const medicationStatusLabels: Record<MedicationCalendarStatus, string> = {
+  notStarted: "未着手",
+  inProgress: "鑑査中",
+  needsReview: "要確認",
+  completed: "完了"
 };
 
 const emptyPatientForm: PatientFormValues = {
@@ -104,12 +153,69 @@ const emptyChecklist = (patientId: string): Checklist => ({
   updatedAt: nowString()
 });
 
+const emptyMedicationCalendar = (patientId: string): MedicationCalendar => {
+  const today = todayString();
+  return {
+    id: createId(),
+    patientId,
+    startDate: today,
+    endDate: format(addDays(new Date(), 6), "yyyy-MM-dd"),
+    status: "notStarted",
+    memo: "",
+    createdAt: nowString(),
+    updatedAt: nowString()
+  };
+};
+
+const emptyMedicationCalendarDay = (calendarId: string, date: string): MedicationCalendarDay => ({
+  id: createId(),
+  calendarId,
+  date,
+  morning: "",
+  noon: "",
+  evening: "",
+  bedtime: "",
+  wakeup: "",
+  asNeeded: "",
+  external: "",
+  memo: "",
+  checked: false,
+  hasIssue: false,
+  issueMemo: "",
+  createdAt: nowString(),
+  updatedAt: nowString()
+});
+
+const emptyMedicationAudit = (
+  calendarDayId: string,
+  timing: MedicationTiming
+): MedicationCalendarAudit => ({
+  id: createId(),
+  calendarDayId,
+  timing,
+  dateChecked: false,
+  usageChecked: false,
+  countChecked: false,
+  duplicateChecked: false,
+  missingChecked: false,
+  temporaryMedicineChecked: false,
+  stoppedMedicineChecked: false,
+  remainingAdjustmentChecked: false,
+  auditorMemo: "",
+  auditedAt: "",
+  createdAt: nowString(),
+  updatedAt: nowString()
+});
+
 function App() {
   const [data, setData] = useState<AppData>({
     patients: [],
     visits: [],
     tasks: [],
-    checklists: []
+    checklists: [],
+    medicationCalendars: [],
+    medicationCalendarDays: [],
+    medicationCalendarAudits: []
   });
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
@@ -117,13 +223,32 @@ function App() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
 
   const reload = async () => {
-    const [patients, visits, tasks, checklists] = await Promise.all([
+    const [
+      patients,
+      visits,
+      tasks,
+      checklists,
+      medicationCalendars,
+      medicationCalendarDays,
+      medicationCalendarAudits
+    ] = await Promise.all([
       db.patients.orderBy("kana").toArray(),
       db.visits.toArray(),
       db.tasks.orderBy("dueDate").toArray(),
-      db.checklists.toArray()
+      db.checklists.toArray(),
+      db.medicationCalendars.toArray(),
+      db.medicationCalendarDays.toArray(),
+      db.medicationCalendarAudits.toArray()
     ]);
-    setData({ patients, visits, tasks, checklists });
+    setData({
+      patients,
+      visits,
+      tasks,
+      checklists,
+      medicationCalendars,
+      medicationCalendarDays,
+      medicationCalendarAudits
+    });
   };
 
   useEffect(() => {
@@ -264,6 +389,12 @@ function Dashboard({ data }: { data: AppData }) {
   const lowMedicine = data.visits.filter((visit) => !visit.completed && visit.remainingDays <= 3);
   const doctorTasks = data.tasks.filter((task) => !task.completed && task.type === "doctor");
   const openTasks = data.tasks.filter((task) => !task.completed);
+  const openMedicationAudits = data.medicationCalendars.filter((calendar) => calendar.status !== "completed");
+  const medicationNeedsReview = data.medicationCalendars.filter((calendar) => calendar.status === "needsReview");
+  const todayMedicationSet = data.medicationCalendars.filter((calendar) => isDueToday(calendar.startDate));
+  const medicationDueSoon = data.medicationCalendars.filter(
+    (calendar) => calendar.status !== "completed" && daysUntil(calendar.endDate) <= 3
+  );
 
   return (
     <div className="space-y-5">
@@ -274,11 +405,22 @@ function Dashboard({ data }: { data: AppData }) {
         <MetricCard icon={Stethoscope} label="医師確認" value={doctorTasks.length} tone="amber" />
         <MetricCard icon={ClipboardCheck} label="未完了タスク" value={openTasks.length} tone="slate" />
       </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard icon={Pill} label="服薬鑑査 未完了" value={openMedicationAudits.length} tone="amber" />
+        <MetricCard icon={AlertTriangle} label="服薬 要確認" value={medicationNeedsReview.length} tone="rose" />
+        <MetricCard icon={Package} label="今日セット予定" value={todayMedicationSet.length} tone="care" />
+        <MetricCard icon={CalendarDays} label="服薬期限近い" value={medicationDueSoon.length} tone="blue" />
+      </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
         <DashboardList title="今日の対応" items={[...todayVisits, ...todayDeliveries]} data={data} />
         <TaskListPanel title="未完了タスク" tasks={openTasks.slice(0, 8)} patients={data.patients} />
       </div>
+
+      <MedicationDashboardPanel
+        calendars={openMedicationAudits.concat(medicationDueSoon, medicationNeedsReview)}
+        data={data}
+      />
 
       <section className="rounded-md border border-rose-200 bg-white">
         <div className="border-b border-rose-100 px-4 py-3">
@@ -416,6 +558,49 @@ function TaskListPanel({ title, tasks, patients }: { title: string; tasks: Task[
   );
 }
 
+function MedicationDashboardPanel({ calendars, data }: { calendars: MedicationCalendar[]; data: AppData }) {
+  const uniqueCalendars = [...new Map(calendars.map((calendar) => [calendar.id, calendar])).values()];
+
+  return (
+    <section className="rounded-md border border-amber-200 bg-white">
+      <div className="border-b border-amber-100 px-4 py-3">
+        <h2 className="flex items-center gap-2 text-xl font-bold text-amber-950">
+          <Pill size={22} />
+          服薬カレンダー鑑査
+        </h2>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {uniqueCalendars.length ? (
+          uniqueCalendars.map((calendar) => {
+            const patient = data.patients.find((item) => item.id === calendar.patientId);
+            const days = data.medicationCalendarDays.filter((day) => day.calendarId === calendar.id);
+            return (
+              <Link
+                key={calendar.id}
+                to={`/patients/${calendar.patientId}`}
+                className="grid gap-2 px-4 py-3 hover:bg-amber-50 md:grid-cols-[1fr_auto_auto]"
+              >
+                <span>
+                  <span className="block text-lg font-bold">{patient?.name || "患者未設定"}</span>
+                  <span className="text-slate-600">
+                    {formatDateLabel(calendar.startDate)} - {formatDateLabel(calendar.endDate)}
+                  </span>
+                </span>
+                <span className="self-center rounded-md bg-amber-100 px-3 py-2 font-bold text-amber-900">
+                  {medicationStatusLabels[calendar.status]}
+                </span>
+                <span className="self-center text-slate-700">完了率 {getMedicationCompletionRate(days)}%</span>
+              </Link>
+            );
+          })
+        ) : (
+          <p className="px-4 py-5 text-slate-600">服薬カレンダーの要対応はありません</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function PatientsPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -542,6 +727,7 @@ function PatientDetail({
 }) {
   const navigate = useNavigate();
   const [saved, setSaved] = useState("");
+  const [activeTab, setActiveTab] = useState<PatientDetailTab>("basic");
   const [form, setForm] = useState<PatientFormValues>(patient ? toPatientForm(patient) : emptyPatientForm);
   const existingVisit = patient ? data.visits.find((visit) => visit.patientId === patient.id && !visit.completed) : undefined;
   const [visit, setVisit] = useState<Visit>(existingVisit || emptyVisit(patient?.id || ""));
@@ -551,6 +737,9 @@ function PatientDetail({
   const [checklist, setChecklist] = useState<Checklist>(existingChecklist || emptyChecklist(patient?.id || ""));
 
   const patientTasks = patient ? data.tasks.filter((task) => task.patientId === patient.id) : [];
+  const patientCalendars = patient
+    ? data.medicationCalendars.filter((calendar) => calendar.patientId === patient.id)
+    : [];
   const refillDays = daysUntil(visit.nextRefillDate);
 
   useEffect(() => {
@@ -646,6 +835,8 @@ function PatientDetail({
             患者情報を保存
           </button>
         </div>
+        <PatientDetailTabs activeTab={activeTab} onChange={setActiveTab} />
+        {activeTab === "basic" ? (
         <div className="grid gap-4 p-4 md:grid-cols-2">
           <TextInput label="患者名" value={form.name} onChange={(value) => updateForm("name", value)} />
           <TextInput label="フリガナ" value={form.kana} onChange={(value) => updateForm("kana", value)} />
@@ -686,8 +877,10 @@ function PatientDetail({
             />
           </div>
         </div>
+        ) : null}
       </section>
 
+      {activeTab === "schedule" ? (
       <section className="rounded-md border border-slate-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
           <h2 className="text-xl font-bold">訪問・配達管理</h2>
@@ -750,16 +943,67 @@ function PatientDetail({
           </label>
         </div>
       </section>
+      ) : null}
 
-      <PatientTasks patient={patient} tasks={patientTasks} reload={reload} onToggle={toggleTask} />
+      {activeTab === "tasks" ? (
+        <PatientTasks patient={patient} tasks={patientTasks} reload={reload} onToggle={toggleTask} />
+      ) : null}
 
-      <ChecklistPanel checklist={checklist} setChecklist={setChecklist} onSave={saveChecklist} />
+      {activeTab === "checklist" ? (
+        <ChecklistPanel checklist={checklist} setChecklist={setChecklist} onSave={saveChecklist} />
+      ) : null}
+
+      {activeTab === "medication" ? (
+        <MedicationCalendarPanel
+          patient={patient}
+          calendars={patientCalendars}
+          days={data.medicationCalendarDays}
+          audits={data.medicationCalendarAudits}
+          reload={reload}
+          setSaved={setSaved}
+        />
+      ) : null}
 
       {saved ? (
         <div className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-md bg-slate-900 px-5 py-3 font-semibold text-white shadow-lg">
           {saved}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function PatientDetailTabs({
+  activeTab,
+  onChange
+}: {
+  activeTab: PatientDetailTab;
+  onChange: (tab: PatientDetailTab) => void;
+}) {
+  const tabs: Array<{ id: PatientDetailTab; label: string; icon: typeof UserRound }> = [
+    { id: "basic", label: "基本情報", icon: UserRound },
+    { id: "schedule", label: "予定", icon: CalendarDays },
+    { id: "tasks", label: "タスク", icon: ClipboardCheck },
+    { id: "checklist", label: "チェック", icon: CheckCircle2 },
+    { id: "medication", label: "服薬カレンダー", icon: Pill }
+  ];
+
+  return (
+    <div className="flex gap-2 overflow-x-auto border-b border-slate-100 px-4 py-3">
+      {tabs.map(({ id, label, icon: Icon }) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onChange(id)}
+          className={[
+            "touch-target inline-flex shrink-0 items-center gap-2 rounded-md px-4 py-2 font-semibold",
+            activeTab === id ? "bg-care-700 text-white" : "bg-slate-100 text-slate-700"
+          ].join(" ")}
+        >
+          <Icon size={20} />
+          {label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -926,6 +1170,450 @@ function ChecklistPanel({
   );
 }
 
+function MedicationCalendarPanel({
+  patient,
+  calendars,
+  days,
+  audits,
+  reload,
+  setSaved
+}: {
+  patient?: Patient;
+  calendars: MedicationCalendar[];
+  days: MedicationCalendarDay[];
+  audits: MedicationCalendarAudit[];
+  reload: () => Promise<void>;
+  setSaved: (message: string) => void;
+}) {
+  const sortedCalendars = [...calendars].sort((a, b) => b.startDate.localeCompare(a.startDate));
+  const [selectedCalendarId, setSelectedCalendarId] = useState(sortedCalendars[0]?.id || "");
+  const selectedCalendar = sortedCalendars.find((calendar) => calendar.id === selectedCalendarId) || sortedCalendars[0];
+  const calendarDays = selectedCalendar
+    ? days.filter((day) => day.calendarId === selectedCalendar.id).sort((a, b) => a.date.localeCompare(b.date))
+    : [];
+  const [selectedDayId, setSelectedDayId] = useState(calendarDays[0]?.id || "");
+  const selectedDay = calendarDays.find((day) => day.id === selectedDayId) || calendarDays[0];
+  const [selectedTiming, setSelectedTiming] = useState<MedicationTiming>("morning");
+  const selectedAudit = selectedDay
+    ? audits.find((audit) => audit.calendarDayId === selectedDay.id && audit.timing === selectedTiming)
+    : undefined;
+  const [calendarForm, setCalendarForm] = useState<MedicationCalendar>(
+    selectedCalendar || emptyMedicationCalendar(patient?.id || "")
+  );
+  const [dayForm, setDayForm] = useState<MedicationCalendarDay>(
+    selectedDay || emptyMedicationCalendarDay(selectedCalendar?.id || "", todayString())
+  );
+  const [auditForm, setAuditForm] = useState<MedicationCalendarAudit>(
+    selectedAudit || emptyMedicationAudit(selectedDay?.id || "", selectedTiming)
+  );
+
+  useEffect(() => {
+    if (!selectedCalendarId && sortedCalendars[0]) {
+      setSelectedCalendarId(sortedCalendars[0].id);
+    }
+  }, [selectedCalendarId, sortedCalendars]);
+
+  useEffect(() => {
+    if (selectedCalendar) {
+      setCalendarForm(selectedCalendar);
+    }
+  }, [selectedCalendar]);
+
+  useEffect(() => {
+    if (calendarDays[0] && !calendarDays.some((day) => day.id === selectedDayId)) {
+      setSelectedDayId(calendarDays[0].id);
+    }
+  }, [calendarDays, selectedDayId]);
+
+  useEffect(() => {
+    if (selectedDay) {
+      setDayForm(selectedDay);
+    }
+  }, [selectedDay]);
+
+  useEffect(() => {
+    if (selectedAudit) {
+      setAuditForm(selectedAudit);
+    } else if (selectedDay) {
+      setAuditForm(emptyMedicationAudit(selectedDay.id, selectedTiming));
+    }
+  }, [selectedAudit, selectedDay, selectedTiming]);
+
+  const createCalendar = async () => {
+    if (!patient) {
+      setSaved("先に患者情報を保存してください");
+      return;
+    }
+    if (!calendarForm.startDate || !calendarForm.endDate || calendarForm.endDate < calendarForm.startDate) {
+      setSaved("対象期間を確認してください");
+      return;
+    }
+
+    const timestamp = nowString();
+    const calendar: MedicationCalendar = {
+      ...calendarForm,
+      id: createId(),
+      patientId: patient.id,
+      status: "notStarted",
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const generatedDays = eachDayOfInterval({
+      start: parseISO(calendar.startDate),
+      end: parseISO(calendar.endDate)
+    }).map((date) => emptyMedicationCalendarDay(calendar.id, format(date, "yyyy-MM-dd")));
+    const generatedAudits = generatedDays.flatMap((day) =>
+      medicationCoreTimings.map((timing) => emptyMedicationAudit(day.id, timing))
+    );
+
+    await db.transaction(
+      "rw",
+      db.medicationCalendars,
+      db.medicationCalendarDays,
+      db.medicationCalendarAudits,
+      async () => {
+        await db.medicationCalendars.add(calendar);
+        await db.medicationCalendarDays.bulkAdd(generatedDays);
+        await db.medicationCalendarAudits.bulkAdd(generatedAudits);
+      }
+    );
+    setSelectedCalendarId(calendar.id);
+    setSelectedDayId(generatedDays[0]?.id || "");
+    await reload();
+    setSaved("服薬カレンダーを作成しました");
+  };
+
+  const saveCalendar = async () => {
+    if (!selectedCalendar || !patient) return;
+    if (!calendarForm.startDate || !calendarForm.endDate || calendarForm.endDate < calendarForm.startDate) {
+      setSaved("対象期間を確認してください");
+      return;
+    }
+    const timestamp = nowString();
+    const rangeDates = eachDayOfInterval({
+      start: parseISO(calendarForm.startDate),
+      end: parseISO(calendarForm.endDate)
+    }).map((date) => format(date, "yyyy-MM-dd"));
+    const existingDates = new Set(calendarDays.map((day) => day.date));
+    const missingDays = rangeDates
+      .filter((date) => !existingDates.has(date))
+      .map((date) => emptyMedicationCalendarDay(selectedCalendar.id, date));
+    const missingAudits = missingDays.flatMap((day) =>
+      medicationCoreTimings.map((timing) => emptyMedicationAudit(day.id, timing))
+    );
+
+    await db.transaction(
+      "rw",
+      db.medicationCalendars,
+      db.medicationCalendarDays,
+      db.medicationCalendarAudits,
+      async () => {
+        await db.medicationCalendars.put({
+      ...calendarForm,
+      id: selectedCalendar.id,
+      patientId: patient.id,
+          updatedAt: timestamp
+        });
+        if (missingDays.length) {
+          await db.medicationCalendarDays.bulkAdd(missingDays);
+          await db.medicationCalendarAudits.bulkAdd(missingAudits);
+        }
+      }
+    );
+    await reload();
+    setSaved("服薬カレンダーを保存しました");
+  };
+
+  const saveDay = async () => {
+    if (!selectedCalendar || !selectedDay) return;
+    const timestamp = nowString();
+    const nextDay: MedicationCalendarDay = {
+      ...dayForm,
+      hasIssue: Boolean(dayForm.issueMemo.trim()) || getMedicationDayDataWarnings(dayForm).length > 0,
+      updatedAt: timestamp
+    };
+    await db.medicationCalendarDays.put(nextDay);
+
+    const nextDays = calendarDays.map((day) => (day.id === nextDay.id ? nextDay : day));
+    await db.medicationCalendars.update(selectedCalendar.id, {
+      status: deriveMedicationStatus(nextDays),
+      updatedAt: timestamp
+    });
+    await reload();
+    setSaved("日付の内容を保存しました");
+  };
+
+  const saveAudit = async () => {
+    if (!selectedDay) return;
+    const allChecked = medicationAuditChecks.every(([key]) => Boolean(auditForm[key]));
+    await db.medicationCalendarAudits.put({
+      ...auditForm,
+      calendarDayId: selectedDay.id,
+      timing: selectedTiming,
+      auditedAt: allChecked ? nowString() : auditForm.auditedAt,
+      updatedAt: nowString()
+    });
+    await reload();
+    setSaved("鑑査チェックを保存しました");
+  };
+
+  const completionRate = getMedicationCompletionRate(calendarDays);
+  const warningCount = calendarDays.reduce((count, day) => count + getMedicationDayWarnings(day).length, 0);
+
+  return (
+    <section className="rounded-md border border-slate-200 bg-white">
+      <div className="border-b border-slate-100 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-xl font-bold">
+            <Pill size={24} />
+            服薬カレンダー
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {selectedCalendar ? (
+              <button
+                type="button"
+                onClick={saveCalendar}
+                className="touch-target rounded-md border border-slate-300 px-4 py-2 font-semibold"
+              >
+                期間を保存
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={createCalendar}
+              disabled={!patient}
+              className="touch-target rounded-md bg-care-700 px-4 py-2 font-semibold text-white disabled:bg-slate-300"
+            >
+              カレンダー作成
+            </button>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-[1fr_150px_150px_160px]">
+          <label className="grid gap-1">
+            <span className="font-semibold text-slate-700">対象カレンダー</span>
+            <select
+              className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+              value={selectedCalendar?.id || ""}
+              onChange={(event) => setSelectedCalendarId(event.target.value)}
+            >
+              {sortedCalendars.length ? (
+                sortedCalendars.map((calendar) => (
+                  <option key={calendar.id} value={calendar.id}>
+                    {formatDateLabel(calendar.startDate)} - {formatDateLabel(calendar.endDate)}
+                  </option>
+                ))
+              ) : (
+                <option value="">未作成</option>
+              )}
+            </select>
+          </label>
+          <DateInput
+            label="開始日"
+            value={calendarForm.startDate}
+            onChange={(value) => setCalendarForm((current) => ({ ...current, startDate: value }))}
+          />
+          <DateInput
+            label="終了日"
+            value={calendarForm.endDate}
+            onChange={(value) => setCalendarForm((current) => ({ ...current, endDate: value }))}
+          />
+          <label className="grid gap-1">
+            <span className="font-semibold text-slate-700">鑑査ステータス</span>
+            <select
+              className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+              value={calendarForm.status}
+              onChange={(event) =>
+                setCalendarForm((current) => ({
+                  ...current,
+                  status: event.target.value as MedicationCalendarStatus
+                }))
+              }
+            >
+              {Object.entries(medicationStatusLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Badge tone={completionRate === 100 ? "care" : "amber"}>完了率 {completionRate}%</Badge>
+          {selectedCalendar ? <Badge tone="slate">{medicationStatusLabels[selectedCalendar.status]}</Badge> : null}
+          {warningCount > 0 ? <Badge tone="rose">自動警告 {warningCount}件</Badge> : null}
+        </div>
+      </div>
+
+      {selectedCalendar && selectedDay ? (
+        <div className="grid gap-4 p-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <div className="space-y-3">
+            <label className="grid gap-1">
+              <span className="font-semibold text-slate-700">カレンダーメモ</span>
+              <textarea
+                className="min-h-24 rounded-md border border-slate-300 px-3 py-3"
+                value={calendarForm.memo}
+                onChange={(event) => setCalendarForm((current) => ({ ...current, memo: event.target.value }))}
+              />
+            </label>
+            <div className="overflow-hidden rounded-md border border-slate-200">
+              {calendarDays.map((day) => {
+                const warnings = getMedicationDayWarnings(day);
+                return (
+                  <button
+                    type="button"
+                    key={day.id}
+                    onClick={() => setSelectedDayId(day.id)}
+                    className={[
+                      "flex w-full items-center justify-between gap-2 border-b border-slate-100 px-3 py-3 text-left last:border-b-0",
+                      getMedicationDayTone(day),
+                      selectedDay.id === day.id ? "outline outline-2 outline-care-600" : ""
+                    ].join(" ")}
+                  >
+                    <span>
+                      <span className="block font-bold">{formatDateLabel(day.date)}</span>
+                      <span className="text-sm text-slate-600">
+                        {day.checked ? "鑑査済み" : day.hasIssue ? "要確認" : "未鑑査"}
+                      </span>
+                    </span>
+                    <span className="flex gap-1">
+                      {warnings.length ? <AlertTriangle size={20} className="text-rose-700" /> : null}
+                      {day.memo || day.issueMemo ? <MessageSquareText size={20} className="text-slate-600" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              {medicationCoreTimings.map((timing) => (
+                <label key={timing} className="grid gap-1">
+                  <span className="font-semibold text-slate-700">{medicationTimingLabels[timing]}</span>
+                  <textarea
+                    className="min-h-24 rounded-md border border-slate-300 px-3 py-3"
+                    value={String(dayForm[timing])}
+                    onChange={(event) =>
+                      setDayForm((current) => ({ ...current, [timing]: event.target.value }))
+                    }
+                  />
+                </label>
+              ))}
+              <TextInput
+                label="頓服"
+                value={dayForm.asNeeded}
+                onChange={(value) => setDayForm((current) => ({ ...current, asNeeded: value }))}
+              />
+              <TextInput
+                label="外用"
+                value={dayForm.external}
+                onChange={(value) => setDayForm((current) => ({ ...current, external: value }))}
+              />
+              <label className="grid gap-1 md:col-span-2">
+                <span className="font-semibold text-slate-700">注意メモ</span>
+                <textarea
+                  className="min-h-20 rounded-md border border-slate-300 px-3 py-3"
+                  value={dayForm.memo}
+                  onChange={(event) => setDayForm((current) => ({ ...current, memo: event.target.value }))}
+                />
+              </label>
+              <label className="grid gap-1 md:col-span-2">
+                <span className="font-semibold text-slate-700">要確認メモ</span>
+                <textarea
+                  className="min-h-20 rounded-md border border-rose-200 bg-rose-50 px-3 py-3"
+                  value={dayForm.issueMemo}
+                  onChange={(event) =>
+                    setDayForm((current) => ({
+                      ...current,
+                      issueMemo: event.target.value,
+                      hasIssue: Boolean(event.target.value.trim())
+                    }))
+                  }
+                />
+              </label>
+              <Toggle
+                label="この日を鑑査済み"
+                checked={dayForm.checked}
+                onChange={(value) => setDayForm((current) => ({ ...current, checked: value }))}
+              />
+              <button
+                type="button"
+                onClick={saveDay}
+                className="touch-target rounded-md bg-slate-900 px-5 py-3 font-semibold text-white"
+              >
+                日付内容を保存
+              </button>
+            </div>
+
+            <div className="rounded-md border border-slate-200">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <h3 className="text-lg font-bold">鑑査チェックリスト</h3>
+              </div>
+              <div className="grid gap-3 p-4">
+                <div className="flex flex-wrap gap-2">
+                  {medicationCoreTimings.map((timing) => (
+                    <button
+                      key={timing}
+                      type="button"
+                      onClick={() => setSelectedTiming(timing)}
+                      className={[
+                        "touch-target rounded-md px-4 py-2 font-semibold",
+                        selectedTiming === timing ? "bg-care-700 text-white" : "bg-slate-100 text-slate-700"
+                      ].join(" ")}
+                    >
+                      {medicationTimingLabels[timing]}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {medicationAuditChecks.map(([key, label]) => (
+                    <Toggle
+                      key={String(key)}
+                      label={label}
+                      checked={Boolean(auditForm[key])}
+                      onChange={(value) => setAuditForm((current) => ({ ...current, [key]: value }))}
+                    />
+                  ))}
+                </div>
+                <label className="grid gap-1">
+                  <span className="font-semibold text-slate-700">鑑査メモ</span>
+                  <textarea
+                    className="min-h-20 rounded-md border border-slate-300 px-3 py-3"
+                    value={auditForm.auditorMemo}
+                    onChange={(event) =>
+                      setAuditForm((current) => ({ ...current, auditorMemo: event.target.value }))
+                    }
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={saveAudit}
+                  className="touch-target rounded-md bg-care-700 px-5 py-3 font-semibold text-white"
+                >
+                  鑑査チェックを保存
+                </button>
+              </div>
+            </div>
+
+            {getMedicationDayWarnings(dayForm).length ? (
+              <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-rose-950">
+                <p className="font-bold">自動警告</p>
+                <ul className="mt-2 list-disc pl-5">
+                  {getMedicationDayWarnings(dayForm).map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div className="p-5 text-slate-600">服薬カレンダーは未作成です。開始日と終了日を確認して作成してください。</div>
+      )}
+    </section>
+  );
+}
+
 function TasksPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
   const [openOnly, setOpenOnly] = useState(true);
   const tasks = openOnly ? data.tasks.filter((task) => !task.completed) : data.tasks;
@@ -1048,6 +1736,72 @@ function Badge({ children, tone }: { children: React.ReactNode; tone: "rose" | "
     care: "bg-care-100 text-care-900"
   }[tone];
   return <span className={`rounded-md px-2 py-1 text-sm font-bold ${className}`}>{children}</span>;
+}
+
+function getMedicationCompletionRate(days: MedicationCalendarDay[]) {
+  if (!days.length) return 0;
+  const checkedCount = days.filter((day) => day.checked).length;
+  return Math.round((checkedCount / days.length) * 100);
+}
+
+function getMedicationDayWarnings(day: MedicationCalendarDay) {
+  const warnings = getMedicationDayDataWarnings(day);
+  if (!day.checked) {
+    warnings.push("鑑査未完了です");
+  }
+  return warnings;
+}
+
+function getMedicationDayDataWarnings(day: MedicationCalendarDay) {
+  const warnings: string[] = [];
+  const coreValues = medicationCoreTimings.map((timing) => String(day[timing]).trim());
+  const filledCount = coreValues.filter(Boolean).length;
+
+  if (filledCount === 0) {
+    warnings.push("朝・昼・夕・寝る前がすべて空欄です");
+  } else if (filledCount > 0 && filledCount < medicationCoreTimings.length) {
+    warnings.push("朝昼夕寝る前の一部だけ未入力です");
+  }
+
+  medicationCoreTimings.forEach((timing) => {
+    if (hasDuplicateLines(String(day[timing]))) {
+      warnings.push(`${medicationTimingLabels[timing]}に重複入力があります`);
+    }
+  });
+
+  const memoText = `${day.memo} ${day.issueMemo}`;
+  if (/(中止|変更|残薬|臨時)/.test(memoText) && !day.checked) {
+    warnings.push("メモに中止・変更・残薬・臨時が含まれています");
+  }
+
+  return warnings;
+}
+
+function hasDuplicateLines(value: string) {
+  const lines = value
+    .split(/\n|、|,/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return new Set(lines).size !== lines.length;
+}
+
+function getMedicationDayTone(day: MedicationCalendarDay) {
+  if (day.hasIssue || day.issueMemo) return "bg-rose-50 text-rose-950";
+  if (day.checked) return "bg-care-50 text-care-950";
+  return "bg-amber-50 text-amber-950";
+}
+
+function deriveMedicationStatus(days: MedicationCalendarDay[]): MedicationCalendarStatus {
+  if (!days.length || days.every((day) => !day.checked && !day.hasIssue)) {
+    return "notStarted";
+  }
+  if (days.some((day) => day.hasIssue || day.issueMemo || getMedicationDayDataWarnings(day).length > 0)) {
+    return "needsReview";
+  }
+  if (days.every((day) => day.checked)) {
+    return "completed";
+  }
+  return "inProgress";
 }
 
 function toPatientForm(patient: Patient): PatientFormValues {

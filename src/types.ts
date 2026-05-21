@@ -78,4 +78,56 @@ export interface Checklist {
   updatedAt: string;
 }
 
+export type MedicationCalendarStatus = "notStarted" | "inProgress" | "needsReview" | "completed";
+
+export type MedicationTiming = "morning" | "noon" | "evening" | "bedtime" | "wakeup" | "asNeeded" | "external";
+
+export interface MedicationCalendar {
+  id: string;
+  patientId: string;
+  startDate: string;
+  endDate: string;
+  status: MedicationCalendarStatus;
+  memo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MedicationCalendarDay {
+  id: string;
+  calendarId: string;
+  date: string;
+  morning: string;
+  noon: string;
+  evening: string;
+  bedtime: string;
+  wakeup: string;
+  asNeeded: string;
+  external: string;
+  memo: string;
+  checked: boolean;
+  hasIssue: boolean;
+  issueMemo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MedicationCalendarAudit {
+  id: string;
+  calendarDayId: string;
+  timing: MedicationTiming;
+  dateChecked: boolean;
+  usageChecked: boolean;
+  countChecked: boolean;
+  duplicateChecked: boolean;
+  missingChecked: boolean;
+  temporaryMedicineChecked: boolean;
+  stoppedMedicineChecked: boolean;
+  remainingAdjustmentChecked: boolean;
+  auditorMemo: string;
+  auditedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type PatientFormValues = Omit<Patient, "id" | "createdAt" | "updatedAt">;
