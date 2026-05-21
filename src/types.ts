@@ -12,6 +12,7 @@ export type TaskType =
 
 export interface Patient {
   id: string;
+  order?: number;
   name: string;
   kana: string;
   birthday: string;
@@ -80,7 +81,17 @@ export interface Checklist {
 
 export type MedicationCalendarStatus = "notStarted" | "inProgress" | "needsReview" | "completed";
 
-export type MedicationTiming = "morning" | "noon" | "evening" | "bedtime" | "wakeup" | "asNeeded" | "external";
+export type MedicationTiming =
+  | "morning"
+  | "noon"
+  | "evening"
+  | "bedtime"
+  | "wakeup"
+  | "asNeeded"
+  | "external"
+  | "other";
+
+export type DosageForm = "tablet" | "powder" | "magnesium" | "patch" | "kampo" | "other";
 
 export interface MedicationCalendar {
   id: string;
@@ -104,6 +115,7 @@ export interface MedicationCalendarDay {
   wakeup: string;
   asNeeded: string;
   external: string;
+  other: string;
   memo: string;
   checked: boolean;
   hasIssue: boolean;
@@ -130,4 +142,27 @@ export interface MedicationCalendarAudit {
   updatedAt: string;
 }
 
-export type PatientFormValues = Omit<Patient, "id" | "createdAt" | "updatedAt">;
+export interface MedicationPackagePattern {
+  id: string;
+  patientId: string;
+  timing: MedicationTiming;
+  updatedAt: string;
+}
+
+export interface MedicationPackageItem {
+  id: string;
+  patternId: string;
+  order: number;
+  dosageForm: DosageForm;
+  quantity: string;
+  medicineName: string;
+  clinicName: string;
+  isTemporary: boolean;
+  isStopped: boolean;
+  isSelfAdjustment: boolean;
+  memo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PatientFormValues = Omit<Patient, "id" | "order" | "createdAt" | "updatedAt">;

@@ -31,10 +31,13 @@ npm run preview
 - `/` ダッシュボード
 - `/patients` 患者一覧
 - `/patients/:id` 患者詳細
+- `/patients/:id/package-audit` 一包化編集
 - `/tasks` タスク一覧
+- `/medication-audit` 服薬カレンダー鑑査
 - `/settings` 設定
 
 患者詳細では基本情報、予定、タスク、チェックシート、服薬カレンダーをタブで切り替えます。服薬カレンダーは患者ごとに期間を作成し、日付ごとの朝・昼・夕・寝る前、注意メモ、要確認メモ、鑑査チェックをオフライン保存できます。
+服薬カレンダー鑑査画面では患者カードをiPad横向きで4列表示し、並び替えモードON時のみドラッグで手動並び替えできます。カードには一包化内容、包数、順番確認状態、鑑査ステータス、完了率を表示し、カードから一包化編集画面へ遷移できます。
 
 ## 保存先
 
@@ -47,3 +50,5 @@ npm run preview
 - medicationCalendars
 - medicationCalendarDays
 - medicationCalendarAudits
+- medicationPackagePatterns
+- medicationPackageItems

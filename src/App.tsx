@@ -1,5 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  closestCenter,
+  DndContext,
+  type DragEndEvent,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  rectSortingStrategy,
+  SortableContext,
+  useSortable
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   BrowserRouter,
   Link,
   Navigate,
@@ -14,6 +30,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardCheck,
+  GripVertical,
   Home,
   Menu,
   MessageSquareText,
@@ -36,6 +53,9 @@ import type {
   MedicationCalendarDay,
   MedicationCalendarStatus,
   MedicationTiming,
+  DosageForm,
+  MedicationPackageItem,
+  MedicationPackagePattern,
   Patient,
   PatientFormValues,
   Task,
@@ -63,6 +83,8 @@ type AppData = {
   medicationCalendars: MedicationCalendar[];
   medicationCalendarDays: MedicationCalendarDay[];
   medicationCalendarAudits: MedicationCalendarAudit[];
+  medicationPackagePatterns: MedicationPackagePattern[];
+  medicationPackageItems: MedicationPackageItem[];
 };
 
 type PatientDetailTab = "basic" | "schedule" | "tasks" | "checklist" | "medication";
@@ -74,10 +96,30 @@ const medicationTimingLabels: Record<MedicationTiming, string> = {
   bedtime: "寝る前",
   wakeup: "起床時",
   asNeeded: "頓服",
-  external: "外用"
+  external: "外用",
+  other: "その他"
 };
 
 const medicationCoreTimings: MedicationTiming[] = ["morning", "noon", "evening", "bedtime"];
+const medicationEditableTimings: MedicationTiming[] = [
+  "morning",
+  "noon",
+  "evening",
+  "bedtime",
+  "wakeup",
+  "asNeeded",
+  "external",
+  "other"
+];
+
+const dosageFormLabels: Record<DosageForm, string> = {
+  tablet: "錠",
+  powder: "粉",
+  magnesium: "Mg",
+  patch: "貼付",
+  kampo: "漢方",
+  other: "その他"
+};
 
 const medicationAuditChecks: Array<[keyof MedicationCalendarAudit, string]> = [
   ["dateChecked", "日付が正しい"],
@@ -178,6 +220,7 @@ const emptyMedicationCalendarDay = (calendarId: string, date: string): Medicatio
   wakeup: "",
   asNeeded: "",
   external: "",
+  other: "",
   memo: "",
   checked: false,
   hasIssue: false,
@@ -215,7 +258,9 @@ function App() {
     checklists: [],
     medicationCalendars: [],
     medicationCalendarDays: [],
-    medicationCalendarAudits: []
+    medicationCalendarAudits: [],
+    medicationPackagePatterns: [],
+    medicationPackageItems: []
   });
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
@@ -230,24 +275,30 @@ function App() {
       checklists,
       medicationCalendars,
       medicationCalendarDays,
-      medicationCalendarAudits
+      medicationCalendarAudits,
+      medicationPackagePatterns,
+      medicationPackageItems
     ] = await Promise.all([
-      db.patients.orderBy("kana").toArray(),
+      db.patients.toArray(),
       db.visits.toArray(),
       db.tasks.orderBy("dueDate").toArray(),
       db.checklists.toArray(),
       db.medicationCalendars.toArray(),
       db.medicationCalendarDays.toArray(),
-      db.medicationCalendarAudits.toArray()
+      db.medicationCalendarAudits.toArray(),
+      db.medicationPackagePatterns.toArray(),
+      db.medicationPackageItems.toArray()
     ]);
     setData({
-      patients,
+      patients: sortPatientsByOrder(patients),
       visits,
       tasks,
       checklists,
       medicationCalendars,
       medicationCalendarDays,
-      medicationCalendarAudits
+      medicationCalendarAudits,
+      medicationPackagePatterns,
+      medicationPackageItems
     });
   };
 
@@ -340,7 +391,15 @@ function App() {
                 path="/patients/:id"
                 element={<PatientsPage data={data} reload={reload} />}
               />
+              <Route
+                path="/patients/:id/package-audit"
+                element={<PackageAuditEditor data={data} reload={reload} />}
+              />
               <Route path="/tasks" element={<TasksPage data={data} reload={reload} />} />
+              <Route
+                path="/medication-audit"
+                element={<MedicationAuditPage data={data} reload={reload} />}
+              />
               <Route path="/settings" element={<SettingsPage data={data} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
@@ -361,6 +420,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
     { to: "/", label: "ダッシュボード", icon: CalendarDays },
     { to: "/patients", label: "患者一覧", icon: UsersRound },
     { to: "/tasks", label: "タスク", icon: ClipboardCheck },
+    { to: "/medication-audit", label: "服薬カレンダー鑑査", icon: Pill },
     { to: "/settings", label: "設定", icon: Settings }
   ];
 
@@ -601,6 +661,190 @@ function MedicationDashboardPanel({ calendars, data }: { calendars: MedicationCa
   );
 }
 
+function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+  const [reorderMode, setReorderMode] = useState(false);
+  const [orderedIds, setOrderedIds] = useState(data.patients.map((patient) => patient.id));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } })
+  );
+
+  useEffect(() => {
+    setOrderedIds(data.patients.map((patient) => patient.id));
+  }, [data.patients]);
+
+  const orderedPatients = orderedIds
+    .map((id) => data.patients.find((patient) => patient.id === id))
+    .filter((patient): patient is Patient => Boolean(patient));
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = orderedIds.indexOf(String(active.id));
+    const newIndex = orderedIds.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const nextIds = arrayMove(orderedIds, oldIndex, newIndex);
+    setOrderedIds(nextIds);
+    await db.transaction("rw", db.patients, async () => {
+      await Promise.all(
+        nextIds.map((id, order) => db.patients.update(id, { order, updatedAt: nowString() }))
+      );
+    });
+    await reload();
+  };
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-md border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="flex items-center gap-2 text-2xl font-bold">
+              <Pill size={26} />
+              服薬カレンダー鑑査
+            </h1>
+            <p className="mt-1 text-slate-600">患者カードを4×5グリッドで確認し、一包化内容と鑑査状況を管理します。</p>
+          </div>
+          <Toggle label="並び替えモードON" checked={reorderMode} onChange={setReorderMode} />
+        </div>
+      </section>
+
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleDragEnd(event)}>
+        <SortableContext items={orderedIds} strategy={rectSortingStrategy}>
+          <div className="grid gap-3 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-4">
+            {orderedPatients.slice(0, 20).map((patient) => (
+              <SortableMedicationPatientCard
+                key={patient.id}
+                patient={patient}
+                data={data}
+                reorderMode={reorderMode}
+              />
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
+    </div>
+  );
+}
+
+function SortableMedicationPatientCard({
+  patient,
+  data,
+  reorderMode
+}: {
+  patient: Patient;
+  data: AppData;
+  reorderMode: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: patient.id,
+    disabled: !reorderMode
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className={isDragging ? "z-10 opacity-80" : ""}>
+      <MedicationPatientCard
+        patient={patient}
+        data={data}
+        reorderMode={reorderMode}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
+    </div>
+  );
+}
+
+function MedicationPatientCard({
+  patient,
+  data,
+  reorderMode,
+  dragHandleProps
+}: {
+  patient: Patient;
+  data: AppData;
+  reorderMode: boolean;
+  dragHandleProps: Record<string, unknown>;
+}) {
+  const calendar = getLatestMedicationCalendar(patient.id, data.medicationCalendars);
+  const days = calendar ? data.medicationCalendarDays.filter((day) => day.calendarId === calendar.id) : [];
+  const patterns = data.medicationPackagePatterns.filter((pattern) => pattern.patientId === patient.id);
+  const items = getPatternItems(patterns, data.medicationPackageItems);
+  const issueCount = days.filter((day) => day.hasIssue || day.issueMemo || getMedicationDayDataWarnings(day).length).length;
+  const packageCount = getPackageCount(patterns, data.medicationPackageItems);
+  const status = calendar?.status || "notStarted";
+  const cardTone = {
+    notStarted: "border-slate-200 bg-white",
+    inProgress: "border-amber-200 bg-amber-50",
+    needsReview: "border-rose-200 bg-rose-50",
+    completed: "border-care-100 bg-care-50"
+  }[status];
+
+  const content = (
+    <article className={`h-full rounded-md border p-4 ${cardTone}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold">{patient.name}</h2>
+          <p className="text-slate-600">{patient.facilityName || "自宅"}</p>
+        </div>
+        {reorderMode ? (
+          <button
+            type="button"
+            className="touch-target rounded-md border border-slate-300 bg-white px-3"
+            aria-label="並び替え"
+            {...dragHandleProps}
+          >
+            <GripVertical size={22} />
+          </button>
+        ) : null}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Badge tone={status === "completed" ? "care" : status === "needsReview" ? "rose" : status === "inProgress" ? "amber" : "slate"}>
+          {medicationStatusLabels[status]}
+        </Badge>
+        <Badge tone={issueCount ? "rose" : "slate"}>要確認 {issueCount}</Badge>
+        <Badge tone="slate">完了率 {getMedicationCompletionRate(days)}%</Badge>
+      </div>
+
+      <p className="mt-3 text-sm font-semibold text-slate-700">
+        対象期間 {calendar ? `${formatDateLabel(calendar.startDate)} - ${formatDateLabel(calendar.endDate)}` : "未作成"}
+      </p>
+
+      <div className="mt-3 space-y-2">
+        {medicationCoreTimings.map((timing) => (
+          <MedicationLine key={timing} timing={timing} items={items[timing] || []} />
+        ))}
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-sm font-semibold text-slate-700">
+        <span>包数：{packageCount} / {days.length ? packageCount : 0}</span>
+        <span>順番：{status === "completed" ? "確認済み" : "未確認"}</span>
+      </div>
+      {hasTemporaryItem(items) ? <p className="mt-2 font-bold text-amber-800">臨時あり</p> : null}
+    </article>
+  );
+
+  if (reorderMode) return content;
+  return (
+    <Link to={`/patients/${patient.id}/package-audit`} className="block h-full">
+      {content}
+    </Link>
+  );
+}
+
+function MedicationLine({ timing, items }: { timing: MedicationTiming; items: MedicationPackageItem[] }) {
+  return (
+    <p className={items.length ? "text-slate-900" : "rounded-md bg-slate-100 px-2 py-1 italic text-slate-500"}>
+      <span className="font-bold">{medicationTimingLabels[timing]}：</span>
+      {formatPackageItems(items)}
+    </p>
+  );
+}
+
 function PatientsPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -763,6 +1007,7 @@ function PatientDetail({
     const payload: Patient = {
       ...form,
       id: patientId,
+      order: patient?.order ?? data.patients.length,
       createdAt: patient?.createdAt || timestamp,
       updatedAt: timestamp
     };
@@ -1614,6 +1859,289 @@ function MedicationCalendarPanel({
   );
 }
 
+function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const patient = data.patients.find((item) => item.id === id);
+  const [selectedTiming, setSelectedTiming] = useState<MedicationTiming>("morning");
+  const pattern = patient
+    ? data.medicationPackagePatterns.find(
+        (item) => item.patientId === patient.id && item.timing === selectedTiming
+      )
+    : undefined;
+  const patternItems = pattern
+    ? data.medicationPackageItems
+        .filter((item) => item.patternId === pattern.id)
+        .sort((a, b) => a.order - b.order)
+    : [];
+  const [draft, setDraft] = useState<Omit<MedicationPackageItem, "id" | "patternId" | "order" | "createdAt" | "updatedAt">>({
+    dosageForm: "tablet",
+    quantity: "",
+    medicineName: "",
+    clinicName: "",
+    isTemporary: false,
+    isStopped: false,
+    isSelfAdjustment: false,
+    memo: ""
+  });
+
+  const ensurePattern = async () => {
+    if (!patient) return undefined;
+    const existing = data.medicationPackagePatterns.find(
+      (item) => item.patientId === patient.id && item.timing === selectedTiming
+    );
+    if (existing) return existing;
+
+    const nextPattern: MedicationPackagePattern = {
+      id: createId(),
+      patientId: patient.id,
+      timing: selectedTiming,
+      updatedAt: nowString()
+    };
+    await db.medicationPackagePatterns.add(nextPattern);
+    await reload();
+    return nextPattern;
+  };
+
+  const addPackageItem = async () => {
+    const targetPattern = await ensurePattern();
+    if (!targetPattern) return;
+    const timestamp = nowString();
+    await db.medicationPackageItems.add({
+      ...draft,
+      id: createId(),
+      patternId: targetPattern.id,
+      order: patternItems.length,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    });
+    setDraft({
+      dosageForm: "tablet",
+      quantity: "",
+      medicineName: "",
+      clinicName: "",
+      isTemporary: false,
+      isStopped: false,
+      isSelfAdjustment: false,
+      memo: ""
+    });
+    await reload();
+  };
+
+  const updatePackageItem = async (item: MedicationPackageItem, patch: Partial<MedicationPackageItem>) => {
+    await db.medicationPackageItems.update(item.id, { ...patch, updatedAt: nowString() });
+    await reload();
+  };
+
+  const deletePackageItem = async (item: MedicationPackageItem) => {
+    await db.medicationPackageItems.delete(item.id);
+    await normalizePackageOrder(patternItems.filter((current) => current.id !== item.id));
+    await reload();
+  };
+
+  const movePackageItem = async (item: MedicationPackageItem, direction: -1 | 1) => {
+    const currentIndex = patternItems.findIndex((current) => current.id === item.id);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= patternItems.length) return;
+    await normalizePackageOrder(arrayMove(patternItems, currentIndex, nextIndex));
+    await reload();
+  };
+
+  if (!patient) {
+    return (
+      <section className="rounded-md border border-slate-200 bg-white p-5">
+        <p className="text-slate-600">患者が見つかりません</p>
+      </section>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-md border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">{patient.name} 一包化編集</h1>
+            <p className="mt-1 text-slate-600">{patient.facilityName || "自宅"}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate("/medication-audit")}
+            className="touch-target rounded-md border border-slate-300 px-4 py-2 font-semibold"
+          >
+            一覧へ戻る
+          </button>
+        </div>
+      </section>
+
+      <section className="rounded-md border border-slate-200 bg-white">
+        <div className="flex gap-2 overflow-x-auto border-b border-slate-100 p-3">
+          {medicationEditableTimings.map((timing) => (
+            <button
+              key={timing}
+              type="button"
+              onClick={() => setSelectedTiming(timing)}
+              className={[
+                "touch-target shrink-0 rounded-md px-4 py-2 font-semibold",
+                selectedTiming === timing ? "bg-care-700 text-white" : "bg-slate-100 text-slate-700"
+              ].join(" ")}
+            >
+              {medicationTimingLabels[timing]}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="space-y-3">
+            <h2 className="text-xl font-bold">{medicationTimingLabels[selectedTiming]}の内容</h2>
+            {patternItems.length ? (
+              patternItems.map((item, index) => (
+                <article key={item.id} className="rounded-md border border-slate-200 bg-white p-4">
+                  <div className="grid gap-3 md:grid-cols-[140px_120px_1fr_1fr]">
+                    <label className="grid gap-1">
+                      <span className="font-semibold text-slate-700">剤形</span>
+                      <select
+                        className="touch-target rounded-md border border-slate-300 bg-white px-3 py-2"
+                        value={item.dosageForm}
+                        onChange={(event) =>
+                          void updatePackageItem(item, { dosageForm: event.target.value as DosageForm })
+                        }
+                      >
+                        {Object.entries(dosageFormLabels).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <TextInput
+                      label="数量"
+                      value={item.quantity}
+                      onChange={(value) => void updatePackageItem(item, { quantity: value })}
+                    />
+                    <TextInput
+                      label="薬剤名"
+                      value={item.medicineName}
+                      onChange={(value) => void updatePackageItem(item, { medicineName: value })}
+                    />
+                    <TextInput
+                      label="医療機関"
+                      value={item.clinicName}
+                      onChange={(value) => void updatePackageItem(item, { clinicName: value })}
+                    />
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-3">
+                    <Toggle
+                      label="臨時薬"
+                      checked={item.isTemporary}
+                      onChange={(value) => void updatePackageItem(item, { isTemporary: value })}
+                    />
+                    <Toggle
+                      label="中止薬"
+                      checked={item.isStopped}
+                      onChange={(value) => void updatePackageItem(item, { isStopped: value })}
+                    />
+                    <Toggle
+                      label="自己調節薬"
+                      checked={item.isSelfAdjustment}
+                      onChange={(value) => void updatePackageItem(item, { isSelfAdjustment: value })}
+                    />
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+                    <TextInput
+                      label="メモ"
+                      value={item.memo}
+                      onChange={(value) => void updatePackageItem(item, { memo: value })}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void movePackageItem(item, -1)}
+                      disabled={index === 0}
+                      className="touch-target self-end rounded-md border border-slate-300 px-4 py-2 font-semibold disabled:text-slate-300"
+                    >
+                      上へ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void movePackageItem(item, 1)}
+                      disabled={index === patternItems.length - 1}
+                      className="touch-target self-end rounded-md border border-slate-300 px-4 py-2 font-semibold disabled:text-slate-300"
+                    >
+                      下へ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deletePackageItem(item)}
+                      className="touch-target self-end rounded-md bg-rose-600 px-4 py-2 font-semibold text-white"
+                    >
+                      削除
+                    </button>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p className="rounded-md bg-slate-100 p-4 italic text-slate-600">お薬はありません</p>
+            )}
+          </div>
+
+          <aside className="space-y-4">
+            <section className="rounded-md border border-slate-200 p-4">
+              <h2 className="text-lg font-bold">追加</h2>
+              <div className="mt-3 grid gap-3">
+                <label className="grid gap-1">
+                  <span className="font-semibold text-slate-700">剤形</span>
+                  <select
+                    className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+                    value={draft.dosageForm}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, dosageForm: event.target.value as DosageForm }))
+                    }
+                  >
+                    {Object.entries(dosageFormLabels).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <TextInput label="数量" value={draft.quantity} onChange={(value) => setDraft((current) => ({ ...current, quantity: value }))} />
+                <TextInput label="薬剤名" value={draft.medicineName} onChange={(value) => setDraft((current) => ({ ...current, medicineName: value }))} />
+                <TextInput label="医療機関" value={draft.clinicName} onChange={(value) => setDraft((current) => ({ ...current, clinicName: value }))} />
+                <Toggle label="臨時薬" checked={draft.isTemporary} onChange={(value) => setDraft((current) => ({ ...current, isTemporary: value }))} />
+                <Toggle label="中止薬" checked={draft.isStopped} onChange={(value) => setDraft((current) => ({ ...current, isStopped: value }))} />
+                <Toggle label="自己調節薬" checked={draft.isSelfAdjustment} onChange={(value) => setDraft((current) => ({ ...current, isSelfAdjustment: value }))} />
+                <TextInput label="メモ" value={draft.memo} onChange={(value) => setDraft((current) => ({ ...current, memo: value }))} />
+                <button
+                  type="button"
+                  onClick={() => void addPackageItem()}
+                  className="touch-target rounded-md bg-care-700 px-5 py-3 font-semibold text-white"
+                >
+                  追加
+                </button>
+              </div>
+            </section>
+            <section className="rounded-md border border-slate-200 p-4">
+              <h2 className="text-lg font-bold">カード表示プレビュー</h2>
+              <div className="mt-3 space-y-2">
+                {medicationCoreTimings.map((timing) => {
+                  const targetPattern = data.medicationPackagePatterns.find(
+                    (item) => item.patientId === patient.id && item.timing === timing
+                  );
+                  const targetItems = targetPattern
+                    ? data.medicationPackageItems
+                        .filter((item) => item.patternId === targetPattern.id)
+                        .sort((a, b) => a.order - b.order)
+                    : [];
+                  return <MedicationLine key={timing} timing={timing} items={targetItems} />;
+                })}
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function TasksPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
   const [openOnly, setOpenOnly] = useState(true);
   const tasks = openOnly ? data.tasks.filter((task) => !task.completed) : data.tasks;
@@ -1802,6 +2330,67 @@ function deriveMedicationStatus(days: MedicationCalendarDay[]): MedicationCalend
     return "completed";
   }
   return "inProgress";
+}
+
+function sortPatientsByOrder(patients: Patient[]) {
+  return [...patients].sort((a, b) => {
+    const orderDiff = (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER);
+    if (orderDiff !== 0) return orderDiff;
+    return a.kana.localeCompare(b.kana, "ja");
+  });
+}
+
+function getLatestMedicationCalendar(patientId: string, calendars: MedicationCalendar[]) {
+  return calendars
+    .filter((calendar) => calendar.patientId === patientId)
+    .sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
+}
+
+function getPatternItems(patterns: MedicationPackagePattern[], items: MedicationPackageItem[]) {
+  return patterns.reduce<Record<MedicationTiming, MedicationPackageItem[]>>((acc, pattern) => {
+    acc[pattern.timing] = items
+      .filter((item) => item.patternId === pattern.id)
+      .sort((a, b) => a.order - b.order);
+    return acc;
+  }, {} as Record<MedicationTiming, MedicationPackageItem[]>);
+}
+
+function formatPackageItems(items: MedicationPackageItem[]) {
+  if (!items.length) return "お薬はありません";
+  return items.map(formatPackageItem).join("→");
+}
+
+function formatPackageItem(item: MedicationPackageItem) {
+  const base =
+    item.dosageForm === "tablet"
+      ? `錠（${item.quantity || "0"}）`
+      : item.dosageForm === "powder"
+        ? `粉（${item.quantity || "0"}）`
+        : item.dosageForm === "magnesium"
+          ? "Mg"
+          : item.dosageForm === "kampo"
+            ? item.medicineName || "漢方"
+            : item.dosageForm === "patch"
+              ? item.medicineName || "貼付"
+              : item.medicineName || "その他";
+  const temporary = item.isTemporary ? "【臨時】" : "";
+  const stopped = item.isStopped ? "【中止】" : "";
+  return `${base}${temporary}${stopped}`;
+}
+
+function getPackageCount(patterns: MedicationPackagePattern[], items: MedicationPackageItem[]) {
+  const packageItems = getPatternItems(patterns, items);
+  return medicationCoreTimings.reduce((count, timing) => count + (packageItems[timing]?.length || 0), 0);
+}
+
+function hasTemporaryItem(items: Record<MedicationTiming, MedicationPackageItem[]>) {
+  return Object.values(items).some((timingItems) => timingItems.some((item) => item.isTemporary));
+}
+
+async function normalizePackageOrder(items: MedicationPackageItem[]) {
+  await Promise.all(
+    items.map((item, order) => db.medicationPackageItems.update(item.id, { order, updatedAt: nowString() }))
+  );
 }
 
 function toPatientForm(patient: Patient): PatientFormValues {
