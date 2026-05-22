@@ -400,6 +400,7 @@ function App() {
                 path="/medication-audit"
                 element={<MedicationAuditPage data={data} reload={reload} />}
               />
+              <Route path="/facility-r-calendar" element={<FacilityRCalendarPage data={data} reload={reload} />} />
               <Route path="/settings" element={<SettingsPage data={data} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
@@ -421,6 +422,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
     { to: "/patients", label: "患者一覧", icon: UsersRound },
     { to: "/tasks", label: "タスク", icon: ClipboardCheck },
     { to: "/medication-audit", label: "服薬カレンダー鑑査", icon: Pill },
+    { to: "/facility-r-calendar", label: "老人ホームRカレンダー", icon: Package },
     { to: "/settings", label: "設定", icon: Settings }
   ];
 
@@ -663,6 +665,7 @@ function MedicationDashboardPanel({ calendars, data }: { calendars: MedicationCa
 
 function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
   const [reorderMode, setReorderMode] = useState(false);
+  const [seedMessage, setSeedMessage] = useState("");
   const [orderedIds, setOrderedIds] = useState(data.patients.map((patient) => patient.id));
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -695,6 +698,133 @@ function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Pr
     await reload();
   };
 
+  const seedMockPatients = async (facilityName = "確認施設") => {
+    const existingMockCount = data.patients.filter((patient) => /^模擬患者\d+/.test(patient.name)).length;
+    const targetTotal = 20;
+    const currentTargetCount =
+      facilityName === "老人ホームR"
+        ? data.patients.filter((patient) => patient.facilityName === "老人ホームR").length
+        : data.patients.length;
+    const countToAdd = Math.max(0, targetTotal - currentTargetCount);
+    if (countToAdd === 0) {
+      setSeedMessage("すでに20件以上あります");
+      return;
+    }
+
+    const now = nowString();
+    const startDate = todayString();
+    const endDate = format(addDays(new Date(), 6), "yyyy-MM-dd");
+    const dosageForms: DosageForm[] = ["tablet", "powder", "magnesium", "kampo"];
+
+    await db.transaction(
+      "rw",
+      [
+        db.patients,
+        db.medicationCalendars,
+        db.medicationCalendarDays,
+        db.medicationPackagePatterns,
+        db.medicationPackageItems
+      ],
+      async () => {
+        for (let index = 0; index < countToAdd; index += 1) {
+          const number = existingMockCount + index + 1;
+          const suffix = String(number).padStart(2, "0");
+          const patientId = createId();
+          const calendarId = createId();
+
+          await db.patients.add({
+            id: patientId,
+            order: data.patients.length + index,
+            name: `模擬患者${suffix}`,
+            kana: `モギカンジャ${suffix}`,
+            birthday: "1940-01-01",
+            locationType: "facility",
+            facilityName: facilityName === "老人ホームR" ? "老人ホームR" : `確認施設${((number - 1) % 5) + 1}`,
+            address: "東京都テスト区1-1-1",
+            phone: "03-0000-0000",
+            doctorName: "テスト医師",
+            nurseContact: "テスト訪問看護",
+            familyContact: "家族 090-0000-0000",
+            hasOneDosePackage: true,
+            hasCrushing: number % 4 === 0,
+            hasNarcotics: false,
+            hasColdStorageMedicine: number % 6 === 0,
+            memo: "グリッド表示確認用",
+            createdAt: now,
+            updatedAt: now
+          });
+
+          await db.medicationCalendars.add({
+            id: calendarId,
+            patientId,
+            startDate,
+            endDate,
+            status: number % 7 === 0 ? "needsReview" : number % 3 === 0 ? "completed" : "inProgress",
+            memo: "グリッド表示確認用",
+            createdAt: now,
+            updatedAt: now
+          });
+
+          for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+            const dayDate = format(addDays(new Date(), dayOffset), "yyyy-MM-dd");
+            await db.medicationCalendarDays.add({
+              id: createId(),
+              calendarId,
+              date: dayDate,
+              morning: "朝 一包化",
+              noon: number % 2 === 0 ? "" : "昼 一包化",
+              evening: "夕 一包化",
+              bedtime: number % 3 === 0 ? "寝る前 一包化" : "",
+              wakeup: "",
+              asNeeded: "",
+              external: "",
+              other: "",
+              memo: number % 7 === 0 ? "変更あり" : "",
+              checked: number % 3 === 0,
+              hasIssue: number % 7 === 0,
+              issueMemo: number % 7 === 0 ? "変更確認" : "",
+              createdAt: now,
+              updatedAt: now
+            });
+          }
+
+          for (const timing of medicationCoreTimings) {
+            const patternId = createId();
+            await db.medicationPackagePatterns.add({ id: patternId, patientId, timing, updatedAt: now });
+            const itemCount =
+              timing === "noon" && number % 2 === 0
+                ? 0
+                : timing === "bedtime" && number % 3 !== 0
+                  ? 0
+                  : 1 + (timing === "morning" ? number % 3 : 0);
+
+            for (let order = 0; order < itemCount; order += 1) {
+              const dosageForm = dosageForms[(number + order) % dosageForms.length];
+              await db.medicationPackageItems.add({
+                id: createId(),
+                patternId,
+                order,
+                dosageForm,
+                quantity: dosageForm === "magnesium" ? "" : String(order + 1),
+                medicineName: dosageForm === "kampo" ? `ツムラ${60 + number}` : "",
+                clinicName: order === 0 ? "メインクリニック" : "追加クリニック",
+                isTemporary: number % 8 === 0 && order === 0,
+                isStopped: number % 9 === 0 && order === 0,
+                isSelfAdjustment: dosageForm === "magnesium",
+                memo: "",
+                createdAt: now,
+                updatedAt: now
+              });
+            }
+          }
+        }
+      }
+    );
+
+    await reload();
+    setSeedMessage(`模擬患者を${countToAdd}件追加しました`);
+  };
+
   return (
     <div className="space-y-5">
       <section className="rounded-md border border-slate-200 bg-white p-4">
@@ -706,8 +836,29 @@ function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Pr
             </h1>
             <p className="mt-1 text-slate-600">患者カードを4×5グリッドで確認し、一包化内容と鑑査状況を管理します。</p>
           </div>
-          <Toggle label="並び替えモードON" checked={reorderMode} onChange={setReorderMode} />
+          <div className="flex flex-wrap items-center gap-3">
+            {import.meta.env.DEV ? (
+              <>
+              <button
+                type="button"
+                onClick={() => void seedMockPatients()}
+                className="touch-target rounded-md bg-slate-900 px-4 py-2 font-semibold text-white"
+              >
+                模擬患者を追加
+              </button>
+              <button
+                type="button"
+                onClick={() => void seedMockPatients("老人ホームR")}
+                className="touch-target rounded-md bg-care-700 px-4 py-2 font-semibold text-white"
+              >
+                老人ホームR患者を追加
+              </button>
+              </>
+            ) : null}
+            <Toggle label="並び替えモードON" checked={reorderMode} onChange={setReorderMode} />
+          </div>
         </div>
+        {seedMessage ? <p className="mt-3 font-semibold text-care-900">{seedMessage}</p> : null}
       </section>
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleDragEnd(event)}>
@@ -731,11 +882,13 @@ function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Pr
 function SortableMedicationPatientCard({
   patient,
   data,
-  reorderMode
+  reorderMode,
+  slotNumber
 }: {
   patient: Patient;
   data: AppData;
   reorderMode: boolean;
+  slotNumber?: number;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: patient.id,
@@ -752,21 +905,270 @@ function SortableMedicationPatientCard({
         patient={patient}
         data={data}
         reorderMode={reorderMode}
+        slotNumber={slotNumber}
         dragHandleProps={{ ...attributes, ...listeners }}
       />
     </div>
   );
 }
 
+function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+  const facilityPatients = useMemo(
+    () => sortPatientsByOrder(data.patients.filter((patient) => patient.facilityName === "老人ホームR")),
+    [data.patients]
+  );
+  const [reorderMode, setReorderMode] = useState(false);
+  const [seedMessage, setSeedMessage] = useState("");
+  const [orderedIds, setOrderedIds] = useState(facilityPatients.map((patient) => patient.id));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } })
+  );
+
+  useEffect(() => {
+    setOrderedIds(facilityPatients.map((patient) => patient.id));
+  }, [facilityPatients]);
+
+  const orderedPatients = orderedIds
+    .map((id) => facilityPatients.find((patient) => patient.id === id))
+    .filter((patient): patient is Patient => Boolean(patient))
+    .slice(0, 20);
+  const slots = Array.from({ length: 20 }, (_, index) => ({
+    slotNumber: index + 1,
+    patient: orderedPatients[index]
+  }));
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = orderedIds.indexOf(String(active.id));
+    const newIndex = orderedIds.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const nextIds = arrayMove(orderedIds, oldIndex, newIndex);
+    setOrderedIds(nextIds);
+    await db.transaction("rw", db.patients, async () => {
+      await Promise.all(
+        nextIds.map((id, order) => db.patients.update(id, { order, updatedAt: nowString() }))
+      );
+    });
+    await reload();
+  };
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-md border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="flex items-center gap-2 text-2xl font-bold">
+              <Package size={26} />
+              老人ホームRカレンダー
+            </h1>
+            <p className="mt-1 text-slate-600">
+              施設名が老人ホームRの患者だけを、服薬カレンダー鑑査と同じカードで20マスへ固定表示します。
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {import.meta.env.DEV ? (
+              <button
+                type="button"
+                onClick={() =>
+                  void seedMedicationMockPatients({
+                    data,
+                    reload,
+                    setSeedMessage,
+                    facilityName: "老人ホームR"
+                  })
+                }
+                className="touch-target rounded-md bg-care-700 px-4 py-2 font-semibold text-white"
+              >
+                老人ホームR患者を追加
+              </button>
+            ) : null}
+            <Badge tone="slate">対象 {facilityPatients.length} / 20</Badge>
+            <Toggle label="並び替えモードON" checked={reorderMode} onChange={setReorderMode} />
+          </div>
+        </div>
+        {seedMessage ? <p className="mt-3 font-semibold text-care-900">{seedMessage}</p> : null}
+      </section>
+
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleDragEnd(event)}>
+        <SortableContext items={orderedIds} strategy={rectSortingStrategy}>
+          <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {slots.map(({ slotNumber, patient }) =>
+              patient ? (
+                <SortableMedicationPatientCard
+                  key={patient.id}
+                  patient={patient}
+                  data={data}
+                  reorderMode={reorderMode}
+                  slotNumber={slotNumber}
+                />
+              ) : (
+                <article
+                  key={`empty-${slotNumber}`}
+                  className="min-h-64 rounded-md border border-dashed border-slate-300 bg-white p-4 text-slate-500"
+                >
+                  <p className="text-lg font-bold">{slotNumber}</p>
+                  <p className="mt-20 text-center font-semibold">空き</p>
+                </article>
+              )
+            )}
+          </section>
+        </SortableContext>
+      </DndContext>
+    </div>
+  );
+}
+
+async function seedMedicationMockPatients({
+  data,
+  reload,
+  setSeedMessage,
+  facilityName = "確認施設"
+}: {
+  data: AppData;
+  reload: () => Promise<void>;
+  setSeedMessage: (message: string) => void;
+  facilityName?: string;
+}) {
+  const existingMockCount = data.patients.filter((patient) => /^模擬患者\d+/.test(patient.name)).length;
+  const targetTotal = 20;
+  const currentTargetCount =
+    facilityName === "老人ホームR"
+      ? data.patients.filter((patient) => patient.facilityName === "老人ホームR").length
+      : data.patients.length;
+  const countToAdd = Math.max(0, targetTotal - currentTargetCount);
+  if (countToAdd === 0) {
+    setSeedMessage("すでに20件以上あります");
+    return;
+  }
+
+  const now = nowString();
+  const startDate = todayString();
+  const endDate = format(addDays(new Date(), 6), "yyyy-MM-dd");
+  const dosageForms: DosageForm[] = ["tablet", "powder", "magnesium", "kampo"];
+
+  await db.transaction(
+    "rw",
+    [
+      db.patients,
+      db.medicationCalendars,
+      db.medicationCalendarDays,
+      db.medicationPackagePatterns,
+      db.medicationPackageItems
+    ],
+    async () => {
+      for (let index = 0; index < countToAdd; index += 1) {
+        const number = existingMockCount + index + 1;
+        const suffix = String(number).padStart(2, "0");
+        const patientId = createId();
+        const calendarId = createId();
+
+        await db.patients.add({
+          id: patientId,
+          order: data.patients.length + index,
+          name: `模擬患者${suffix}`,
+          kana: `モギカンジャ${suffix}`,
+          birthday: "1940-01-01",
+          locationType: "facility",
+          facilityName: facilityName === "老人ホームR" ? "老人ホームR" : `確認施設${((number - 1) % 5) + 1}`,
+          address: "東京都テスト区1-1-1",
+          phone: "03-0000-0000",
+          doctorName: "テスト医師",
+          nurseContact: "テスト訪問看護",
+          familyContact: "家族 090-0000-0000",
+          hasOneDosePackage: true,
+          hasCrushing: number % 4 === 0,
+          hasNarcotics: false,
+          hasColdStorageMedicine: number % 6 === 0,
+          memo: "グリッド表示確認用",
+          createdAt: now,
+          updatedAt: now
+        });
+
+        await db.medicationCalendars.add({
+          id: calendarId,
+          patientId,
+          startDate,
+          endDate,
+          status: number % 7 === 0 ? "needsReview" : number % 3 === 0 ? "completed" : "inProgress",
+          memo: "グリッド表示確認用",
+          createdAt: now,
+          updatedAt: now
+        });
+
+        for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+          const dayDate = format(addDays(new Date(), dayOffset), "yyyy-MM-dd");
+          await db.medicationCalendarDays.add({
+            id: createId(),
+            calendarId,
+            date: dayDate,
+            morning: "朝 一包化",
+            noon: number % 2 === 0 ? "" : "昼 一包化",
+            evening: "夕 一包化",
+            bedtime: number % 3 === 0 ? "寝る前 一包化" : "",
+            wakeup: "",
+            asNeeded: "",
+            external: "",
+            other: "",
+            memo: number % 7 === 0 ? "変更あり" : "",
+            checked: number % 3 === 0,
+            hasIssue: number % 7 === 0,
+            issueMemo: number % 7 === 0 ? "変更確認" : "",
+            createdAt: now,
+            updatedAt: now
+          });
+        }
+
+        for (const timing of medicationCoreTimings) {
+          const patternId = createId();
+          await db.medicationPackagePatterns.add({ id: patternId, patientId, timing, updatedAt: now });
+          const itemCount =
+            timing === "noon" && number % 2 === 0
+              ? 0
+              : timing === "bedtime" && number % 3 !== 0
+                ? 0
+                : 1 + (timing === "morning" ? number % 3 : 0);
+
+          for (let order = 0; order < itemCount; order += 1) {
+            const dosageForm = dosageForms[(number + order) % dosageForms.length];
+            await db.medicationPackageItems.add({
+              id: createId(),
+              patternId,
+              order,
+              dosageForm,
+              quantity: dosageForm === "magnesium" ? "" : String(order + 1),
+              medicineName: dosageForm === "kampo" ? `ツムラ${60 + number}` : "",
+              clinicName: order === 0 ? "メインクリニック" : "追加クリニック",
+              isTemporary: number % 8 === 0 && order === 0,
+              isStopped: number % 9 === 0 && order === 0,
+              isSelfAdjustment: dosageForm === "magnesium",
+              memo: "",
+              createdAt: now,
+              updatedAt: now
+            });
+          }
+        }
+      }
+    }
+  );
+
+  await reload();
+  setSeedMessage(`模擬患者を${countToAdd}件追加しました`);
+}
 function MedicationPatientCard({
   patient,
   data,
   reorderMode,
+  slotNumber,
   dragHandleProps
 }: {
   patient: Patient;
   data: AppData;
   reorderMode: boolean;
+  slotNumber?: number;
   dragHandleProps: Record<string, unknown>;
 }) {
   const calendar = getLatestMedicationCalendar(patient.id, data.medicationCalendars);
@@ -787,6 +1189,7 @@ function MedicationPatientCard({
     <article className={`h-full rounded-md border p-4 ${cardTone}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
+          {slotNumber ? <p className="text-sm font-bold text-slate-500">{slotNumber}</p> : null}
           <h2 className="text-xl font-bold">{patient.name}</h2>
           <p className="text-slate-600">{patient.facilityName || "自宅"}</p>
         </div>
