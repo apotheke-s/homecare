@@ -1,0 +1,41 @@
+[
+  {
+    "id": "sato-clinic",
+    "name": "佐藤クリニック",
+    "kana": "サトウクリニック",
+    "type": "clinic",
+    "phone": "03-1111-1111",
+    "fax": "03-1111-1112",
+    "address": "東京都千代田区2-2-2",
+    "memo": "在宅主治医。処方確認は午前中がつながりやすい。",
+    "isMainHomeCareClinic": true,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "midori-hospital",
+    "name": "みどり総合病院",
+    "kana": "ミドリソウゴウビョウイン",
+    "type": "hospital",
+    "phone": "03-2222-2222",
+    "fax": "03-2222-2223",
+    "address": "東京都文京区3-3-3",
+    "memo": "退院時処方と臨時処方の確認先。",
+    "isMainHomeCareClinic": false,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "aoba-dental",
+    "name": "あおば歯科",
+    "kana": "アオバシカ",
+    "type": "dental",
+    "phone": "03-3333-3333",
+    "fax": "03-3333-3334",
+    "address": "東京都台東区4-4-4",
+    "memo": "口腔ケアと歯科処方の連絡先。",
+    "isMainHomeCareClinic": false,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+  }
+]

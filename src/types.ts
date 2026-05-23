@@ -1,5 +1,7 @@
 export type LocationType = "home" | "facility";
 
+export type MedicalInstitutionType = "clinic" | "hospital" | "dental" | "other";
+
 export type TaskType =
   | "delivery"
   | "visit"
@@ -13,6 +15,9 @@ export type TaskType =
 export interface Patient {
   id: string;
   order?: number;
+  facilityCalendarSlot?: number;
+  mainMedicalInstitutionId?: string;
+  additionalMedicalInstitutionIds?: string[];
   name: string;
   kana: string;
   birthday: string;
@@ -28,6 +33,20 @@ export interface Patient {
   hasNarcotics: boolean;
   hasColdStorageMedicine: boolean;
   memo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MedicalInstitution {
+  id: string;
+  name: string;
+  kana: string;
+  type: MedicalInstitutionType;
+  phone: string;
+  fax: string;
+  address: string;
+  memo: string;
+  isMainHomeCareClinic: boolean;
   createdAt: string;
   updatedAt: string;
 }

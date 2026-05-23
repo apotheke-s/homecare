@@ -2,6 +2,7 @@ import Dexie, { type Table } from "dexie";
 import { addDays, format, subDays } from "date-fns";
 import type {
   Checklist,
+  MedicalInstitution,
   MedicationCalendar,
   MedicationCalendarAudit,
   MedicationCalendarDay,
@@ -11,6 +12,7 @@ import type {
   Task,
   Visit
 } from "./types";
+import initialMedicalInstitutions from "./data/medicalInstitutions.json";
 import { calcNextRefillDate, createId, nowString, todayString } from "./utils";
 
 class HomecareDatabase extends Dexie {
@@ -23,6 +25,7 @@ class HomecareDatabase extends Dexie {
   medicationCalendarAudits!: Table<MedicationCalendarAudit, string>;
   medicationPackagePatterns!: Table<MedicationPackagePattern, string>;
   medicationPackageItems!: Table<MedicationPackageItem, string>;
+  medicalInstitutions!: Table<MedicalInstitution, string>;
 
   constructor() {
     super("homecare-pwa-db");
@@ -62,12 +65,37 @@ class HomecareDatabase extends Dexie {
           }
         });
       });
+    this.version(4)
+      .stores({
+        patients: "id, order, name, kana, facilityName, mainMedicalInstitutionId, updatedAt",
+        visits: "id, patientId, visitDate, deliveryDate, nextRefillDate, completed",
+        tasks: "id, patientId, type, dueDate, completed",
+        checklists: "id, patientId, date, completed",
+        medicationCalendars: "id, patientId, startDate, endDate, status, updatedAt",
+        medicationCalendarDays: "id, calendarId, date, checked, hasIssue",
+        medicationCalendarAudits: "id, calendarDayId, timing, auditedAt",
+        medicationPackagePatterns: "id, patientId, timing, updatedAt",
+        medicationPackageItems: "id, patternId, order, dosageForm, clinicName, updatedAt",
+        medicalInstitutions: "id, name, kana, type, isMainHomeCareClinic, updatedAt"
+      })
+      .upgrade(async (tx) => {
+        await tx.table("patients").toCollection().modify((patient) => {
+          if (patient.mainMedicalInstitutionId === undefined) {
+            patient.mainMedicalInstitutionId = "";
+          }
+          if (!Array.isArray(patient.additionalMedicalInstitutionIds)) {
+            patient.additionalMedicalInstitutionIds = [];
+          }
+        });
+      });
   }
 }
 
 export const db = new HomecareDatabase();
 
 export async function seedSampleData() {
+  await seedMedicalInstitutions();
+
   const patientCount = await db.patients.count();
   if (patientCount > 0) return;
 
@@ -96,6 +124,8 @@ export async function seedSampleData() {
     await db.patients.add({
       id: patientId,
       order: 0,
+      mainMedicalInstitutionId: "sato-clinic",
+      additionalMedicalInstitutionIds: ["midori-hospital"],
       name: "山田太郎",
       kana: "ヤマダタロウ",
       birthday: "1944-04-12",
@@ -300,4 +330,11 @@ export async function seedSampleData() {
     ]);
     }
   );
+}
+
+async function seedMedicalInstitutions() {
+  const institutionCount = await db.medicalInstitutions.count();
+  if (institutionCount > 0) return;
+
+  await db.medicalInstitutions.bulkPut(initialMedicalInstitutions as MedicalInstitution[]);
 }

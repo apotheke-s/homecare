@@ -5,6 +5,8 @@ import {
   type DragEndEvent,
   PointerSensor,
   TouchSensor,
+  useDraggable,
+  useDroppable,
   useSensor,
   useSensors
 } from "@dnd-kit/core";
@@ -48,6 +50,8 @@ import { addDays, eachDayOfInterval, format, parseISO } from "date-fns";
 import { db, seedSampleData } from "./db";
 import type {
   Checklist,
+  MedicalInstitution,
+  MedicalInstitutionType,
   MedicationCalendar,
   MedicationCalendarAudit,
   MedicationCalendarDay,
@@ -85,9 +89,10 @@ type AppData = {
   medicationCalendarAudits: MedicationCalendarAudit[];
   medicationPackagePatterns: MedicationPackagePattern[];
   medicationPackageItems: MedicationPackageItem[];
+  medicalInstitutions: MedicalInstitution[];
 };
 
-type PatientDetailTab = "basic" | "schedule" | "tasks" | "checklist" | "medication";
+type PatientDetailTab = "basic" | "schedule" | "tasks" | "checklist" | "medication" | "other";
 
 const medicationTimingLabels: Record<MedicationTiming, string> = {
   morning: "朝",
@@ -139,6 +144,13 @@ const medicationStatusLabels: Record<MedicationCalendarStatus, string> = {
   completed: "完了"
 };
 
+const medicalInstitutionTypeLabels: Record<MedicalInstitutionType, string> = {
+  clinic: "クリニック",
+  hospital: "病院",
+  dental: "歯科",
+  other: "その他"
+};
+
 const emptyPatientForm: PatientFormValues = {
   name: "",
   kana: "",
@@ -148,6 +160,8 @@ const emptyPatientForm: PatientFormValues = {
   address: "",
   phone: "",
   doctorName: "",
+  mainMedicalInstitutionId: "",
+  additionalMedicalInstitutionIds: [],
   nurseContact: "",
   familyContact: "",
   hasOneDosePackage: false,
@@ -155,6 +169,17 @@ const emptyPatientForm: PatientFormValues = {
   hasNarcotics: false,
   hasColdStorageMedicine: false,
   memo: ""
+};
+
+const emptyMedicalInstitutionForm: Omit<MedicalInstitution, "id" | "createdAt" | "updatedAt"> = {
+  name: "",
+  kana: "",
+  type: "clinic",
+  phone: "",
+  fax: "",
+  address: "",
+  memo: "",
+  isMainHomeCareClinic: false
 };
 
 const emptyVisit = (patientId: string): Visit => {
@@ -260,7 +285,8 @@ function App() {
     medicationCalendarDays: [],
     medicationCalendarAudits: [],
     medicationPackagePatterns: [],
-    medicationPackageItems: []
+    medicationPackageItems: [],
+    medicalInstitutions: []
   });
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
@@ -277,7 +303,8 @@ function App() {
       medicationCalendarDays,
       medicationCalendarAudits,
       medicationPackagePatterns,
-      medicationPackageItems
+      medicationPackageItems,
+      medicalInstitutions
     ] = await Promise.all([
       db.patients.toArray(),
       db.visits.toArray(),
@@ -287,7 +314,8 @@ function App() {
       db.medicationCalendarDays.toArray(),
       db.medicationCalendarAudits.toArray(),
       db.medicationPackagePatterns.toArray(),
-      db.medicationPackageItems.toArray()
+      db.medicationPackageItems.toArray(),
+      db.medicalInstitutions.orderBy("name").toArray()
     ]);
     setData({
       patients: sortPatientsByOrder(patients),
@@ -298,7 +326,8 @@ function App() {
       medicationCalendarDays,
       medicationCalendarAudits,
       medicationPackagePatterns,
-      medicationPackageItems
+      medicationPackageItems,
+      medicalInstitutions
     });
   };
 
@@ -397,6 +426,10 @@ function App() {
               />
               <Route path="/tasks" element={<TasksPage data={data} reload={reload} />} />
               <Route
+                path="/medical-institutions"
+                element={<MedicalInstitutionsPage data={data} reload={reload} />}
+              />
+              <Route
                 path="/medication-audit"
                 element={<MedicationAuditPage data={data} reload={reload} />}
               />
@@ -421,6 +454,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
     { to: "/", label: "ダッシュボード", icon: CalendarDays },
     { to: "/patients", label: "患者一覧", icon: UsersRound },
     { to: "/tasks", label: "タスク", icon: ClipboardCheck },
+    { to: "/medical-institutions", label: "医療機関一覧", icon: Stethoscope },
     { to: "/medication-audit", label: "服薬カレンダー鑑査", icon: Pill },
     { to: "/facility-r-calendar", label: "老人ホームRカレンダー", icon: Package },
     { to: "/settings", label: "設定", icon: Settings }
@@ -919,39 +953,36 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
   );
   const [reorderMode, setReorderMode] = useState(false);
   const [seedMessage, setSeedMessage] = useState("");
-  const [orderedIds, setOrderedIds] = useState(facilityPatients.map((patient) => patient.id));
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } })
   );
 
-  useEffect(() => {
-    setOrderedIds(facilityPatients.map((patient) => patient.id));
-  }, [facilityPatients]);
-
-  const orderedPatients = orderedIds
-    .map((id) => facilityPatients.find((patient) => patient.id === id))
-    .filter((patient): patient is Patient => Boolean(patient))
-    .slice(0, 20);
-  const slots = Array.from({ length: 20 }, (_, index) => ({
-    slotNumber: index + 1,
-    patient: orderedPatients[index]
-  }));
+  const slots = getFacilityCalendarSlots(facilityPatients);
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
 
-    const oldIndex = orderedIds.indexOf(String(active.id));
-    const newIndex = orderedIds.indexOf(String(over.id));
-    if (oldIndex < 0 || newIndex < 0) return;
+    const activePatient = facilityPatients.find((patient) => patient.id === String(active.id));
+    const targetSlot = Number(String(over.id).replace("slot-", ""));
+    if (!activePatient || !targetSlot || targetSlot < 1 || targetSlot > 20) return;
 
-    const nextIds = arrayMove(orderedIds, oldIndex, newIndex);
-    setOrderedIds(nextIds);
+    const sourceSlot = activePatient.facilityCalendarSlot;
+    const targetPatient = facilityPatients.find((patient) => patient.facilityCalendarSlot === targetSlot);
     await db.transaction("rw", db.patients, async () => {
-      await Promise.all(
-        nextIds.map((id, order) => db.patients.update(id, { order, updatedAt: nowString() }))
-      );
+      await db.patients.update(activePatient.id, {
+        facilityCalendarSlot: targetSlot,
+        order: targetSlot - 1,
+        updatedAt: nowString()
+      });
+      if (targetPatient && sourceSlot) {
+        await db.patients.update(targetPatient.id, {
+          facilityCalendarSlot: sourceSlot,
+          order: sourceSlot - 1,
+          updatedAt: nowString()
+        });
+      }
     });
     await reload();
   };
@@ -994,30 +1025,88 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
       </section>
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleDragEnd(event)}>
-        <SortableContext items={orderedIds} strategy={rectSortingStrategy}>
-          <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {slots.map(({ slotNumber, patient }) =>
-              patient ? (
-                <SortableMedicationPatientCard
-                  key={patient.id}
-                  patient={patient}
-                  data={data}
-                  reorderMode={reorderMode}
-                  slotNumber={slotNumber}
-                />
-              ) : (
-                <article
-                  key={`empty-${slotNumber}`}
-                  className="min-h-64 rounded-md border border-dashed border-slate-300 bg-white p-4 text-slate-500"
-                >
-                  <p className="text-lg font-bold">{slotNumber}</p>
-                  <p className="mt-20 text-center font-semibold">空き</p>
-                </article>
-              )
-            )}
-          </section>
-        </SortableContext>
+        <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {slots.map(({ slotNumber, patient }) => (
+            <FacilityRCalendarSlot
+              key={slotNumber}
+              slotNumber={slotNumber}
+              patient={patient}
+              data={data}
+              reorderMode={reorderMode}
+            />
+          ))}
+        </section>
       </DndContext>
+    </div>
+  );
+}
+
+function FacilityRCalendarSlot({
+  slotNumber,
+  patient,
+  data,
+  reorderMode
+}: {
+  slotNumber: number;
+  patient?: Patient;
+  data: AppData;
+  reorderMode: boolean;
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id: `slot-${slotNumber}` });
+  const highlight = isOver ? "outline outline-2 outline-care-600" : "";
+
+  if (!patient) {
+    return (
+      <article
+        ref={setNodeRef}
+        className={`min-h-64 rounded-md border border-dashed border-slate-300 bg-white p-4 text-slate-500 ${highlight}`}
+      >
+        <p className="text-lg font-bold">{slotNumber}</p>
+        <p className="mt-20 text-center font-semibold">空き</p>
+      </article>
+    );
+  }
+
+  return (
+    <div ref={setNodeRef} className={highlight}>
+      <DraggableFacilityRPatientCard
+        patient={patient}
+        data={data}
+        reorderMode={reorderMode}
+        slotNumber={slotNumber}
+      />
+    </div>
+  );
+}
+
+function DraggableFacilityRPatientCard({
+  patient,
+  data,
+  reorderMode,
+  slotNumber
+}: {
+  patient: Patient;
+  data: AppData;
+  reorderMode: boolean;
+  slotNumber: number;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: patient.id,
+    disabled: !reorderMode
+  });
+  const style = {
+    transform: CSS.Translate.toString(transform)
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className={isDragging ? "z-10 opacity-80" : ""}>
+      <MedicationPatientCard
+        patient={patient}
+        data={data}
+        reorderMode={reorderMode}
+        slotNumber={slotNumber}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
     </div>
   );
 }
@@ -1069,6 +1158,8 @@ async function seedMedicationMockPatients({
         await db.patients.add({
           id: patientId,
           order: data.patients.length + index,
+          facilityCalendarSlot:
+            facilityName === "老人ホームR" ? currentTargetCount + index + 1 : undefined,
           name: `模擬患者${suffix}`,
           kana: `モギカンジャ${suffix}`,
           birthday: "1940-01-01",
@@ -1174,9 +1265,9 @@ function MedicationPatientCard({
   const calendar = getLatestMedicationCalendar(patient.id, data.medicationCalendars);
   const days = calendar ? data.medicationCalendarDays.filter((day) => day.calendarId === calendar.id) : [];
   const patterns = data.medicationPackagePatterns.filter((pattern) => pattern.patientId === patient.id);
-  const items = getPatternItems(patterns, data.medicationPackageItems);
+  const items = getPatternItems(patterns, data.medicationPackageItems, patient, data.medicalInstitutions);
   const issueCount = days.filter((day) => day.hasIssue || day.issueMemo || getMedicationDayDataWarnings(day).length).length;
-  const packageCount = getPackageCount(patterns, data.medicationPackageItems);
+  const packageCount = getPackageCount(patterns, data.medicationPackageItems, patient, data.medicalInstitutions);
   const status = calendar?.status || "notStarted";
   const cardTone = {
     notStarted: "border-slate-200 bg-white",
@@ -1411,6 +1502,8 @@ function PatientDetail({
       ...form,
       id: patientId,
       order: patient?.order ?? data.patients.length,
+      mainMedicalInstitutionId: form.mainMedicalInstitutionId || "",
+      additionalMedicalInstitutionIds: form.additionalMedicalInstitutionIds || [],
       createdAt: patient?.createdAt || timestamp,
       updatedAt: timestamp
     };
@@ -1466,6 +1559,35 @@ function PatientDetail({
     await reload();
   };
 
+  const deletePatient = async () => {
+    if (!patient) return;
+    const ok = window.confirm(`${patient.name} を削除します。関連する予定、タスク、服薬カレンダー、一包化データも削除されます。`);
+    if (!ok) return;
+    await deletePatientCascade(patient.id);
+    await reload();
+    navigate("/patients", { replace: true });
+  };
+
+  const additionalInstitutionIds = form.additionalMedicalInstitutionIds || [];
+  const updateMainInstitution = (id: string) => {
+    setForm((current) => ({
+      ...current,
+      mainMedicalInstitutionId: id,
+      additionalMedicalInstitutionIds: (current.additionalMedicalInstitutionIds || []).filter((item) => item !== id)
+    }));
+  };
+  const toggleAdditionalInstitution = (id: string, checked: boolean) => {
+    setForm((current) => {
+      const currentIds = current.additionalMedicalInstitutionIds || [];
+      return {
+        ...current,
+        additionalMedicalInstitutionIds: checked
+          ? Array.from(new Set([...currentIds, id])).filter((item) => item !== current.mainMedicalInstitutionId)
+          : currentIds.filter((item) => item !== id)
+      };
+    });
+  };
+
   return (
     <div className="space-y-5">
       <section className="rounded-md border border-slate-200 bg-white">
@@ -1504,8 +1626,40 @@ function PatientDetail({
           <TextInput label="住所" value={form.address} onChange={(value) => updateForm("address", value)} />
           <TextInput label="電話番号" value={form.phone} onChange={(value) => updateForm("phone", value)} />
           <TextInput label="主治医" value={form.doctorName} onChange={(value) => updateForm("doctorName", value)} />
+          <label className="grid gap-1">
+            <span className="font-semibold text-slate-700">主医療機関</span>
+            <select
+              className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+              value={form.mainMedicalInstitutionId || ""}
+              onChange={(event) => updateMainInstitution(event.target.value)}
+            >
+              <option value="">未選択</option>
+              {data.medicalInstitutions.map((institution) => (
+                <option key={institution.id} value={institution.id}>
+                  {institution.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <TextInput label="訪問看護" value={form.nurseContact} onChange={(value) => updateForm("nurseContact", value)} />
           <TextInput label="家族連絡先" value={form.familyContact} onChange={(value) => updateForm("familyContact", value)} />
+          <div className="grid gap-2 md:col-span-2">
+            <p className="font-semibold text-slate-700">追加医療機関</p>
+            <div className="grid gap-2 md:grid-cols-2">
+              {data.medicalInstitutions.length ? (
+                data.medicalInstitutions.map((institution) => (
+                  <Toggle
+                    key={institution.id}
+                    label={`${institution.name}（${medicalInstitutionTypeLabels[institution.type]}）`}
+                    checked={additionalInstitutionIds.includes(institution.id)}
+                    onChange={(checked) => toggleAdditionalInstitution(institution.id, checked)}
+                  />
+                ))
+              ) : (
+                <p className="rounded-md bg-slate-100 p-3 text-slate-600">医療機関一覧に登録がありません</p>
+              )}
+            </div>
+          </div>
           <label className="grid gap-1 md:col-span-2">
             <span className="font-semibold text-slate-700">メモ</span>
             <textarea
@@ -1612,6 +1766,30 @@ function PatientDetail({
         />
       ) : null}
 
+      {activeTab === "other" ? (
+        <section className="rounded-md border border-slate-200 bg-white">
+          <div className="border-b border-slate-100 px-4 py-3">
+            <h2 className="text-xl font-bold">その他</h2>
+          </div>
+          <div className="space-y-4 p-4">
+            <div className="rounded-md border border-rose-200 bg-rose-50 p-4">
+              <h3 className="text-lg font-bold text-rose-950">患者データの削除</h3>
+              <p className="mt-2 text-rose-900">
+                患者情報、予定、タスク、チェックシート、服薬カレンダー、一包化データをまとめて削除します。
+              </p>
+              <button
+                type="button"
+                onClick={() => void deletePatient()}
+                disabled={!patient}
+                className="touch-target mt-4 rounded-md bg-rose-600 px-5 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                患者を削除
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {saved ? (
         <div className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-md bg-slate-900 px-5 py-3 font-semibold text-white shadow-lg">
           {saved}
@@ -1633,7 +1811,8 @@ function PatientDetailTabs({
     { id: "schedule", label: "予定", icon: CalendarDays },
     { id: "tasks", label: "タスク", icon: ClipboardCheck },
     { id: "checklist", label: "チェック", icon: CheckCircle2 },
-    { id: "medication", label: "服薬カレンダー", icon: Pill }
+    { id: "medication", label: "服薬カレンダー", icon: Pill },
+    { id: "other", label: "その他", icon: Settings }
   ];
 
   return (
@@ -2262,6 +2441,239 @@ function MedicationCalendarPanel({
   );
 }
 
+function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<MedicalInstitutionType | "all">("all");
+  const [editingId, setEditingId] = useState<string>("");
+  const editingInstitution = data.medicalInstitutions.find((institution) => institution.id === editingId);
+  const [form, setForm] = useState<Omit<MedicalInstitution, "id" | "createdAt" | "updatedAt">>(
+    emptyMedicalInstitutionForm
+  );
+  const [saved, setSaved] = useState("");
+
+  useEffect(() => {
+    if (editingInstitution) {
+      const { id, createdAt, updatedAt, ...nextForm } = editingInstitution;
+      setForm(nextForm);
+    } else {
+      setForm(emptyMedicalInstitutionForm);
+    }
+  }, [editingInstitution]);
+
+  useEffect(() => {
+    if (!saved) return undefined;
+    const timer = window.setTimeout(() => setSaved(""), 2200);
+    return () => window.clearTimeout(timer);
+  }, [saved]);
+
+  const filteredInstitutions = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return data.medicalInstitutions.filter((institution) => {
+      const matchesQuery =
+        !normalized ||
+        [institution.name, institution.kana, institution.phone, institution.fax, institution.address]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalized);
+      const matchesType = typeFilter === "all" || institution.type === typeFilter;
+      return matchesQuery && matchesType;
+    });
+  }, [data.medicalInstitutions, query, typeFilter]);
+
+  const updateForm = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const saveInstitution = async () => {
+    if (!form.name.trim()) {
+      setSaved("医療機関名を入力してください");
+      return;
+    }
+    const timestamp = nowString();
+    const institution: MedicalInstitution = {
+      ...form,
+      id: editingInstitution?.id || createId(),
+      createdAt: editingInstitution?.createdAt || timestamp,
+      updatedAt: timestamp
+    };
+    await db.medicalInstitutions.put(institution);
+    setEditingId(institution.id);
+    await reload();
+    setSaved("保存しました");
+  };
+
+  const deleteInstitution = async () => {
+    if (!editingInstitution) return;
+    const ok = window.confirm(
+      `${editingInstitution.name} を削除します。患者との紐付けと一包化編集内の医療機関名も解除されます。`
+    );
+    if (!ok) return;
+    await db.transaction("rw", [db.medicalInstitutions, db.patients, db.medicationPackageItems], async () => {
+      await db.medicalInstitutions.delete(editingInstitution.id);
+      const linkedPatients = data.patients.filter(
+        (patient) =>
+          patient.mainMedicalInstitutionId === editingInstitution.id ||
+          (patient.additionalMedicalInstitutionIds || []).includes(editingInstitution.id)
+      );
+      await Promise.all(
+        linkedPatients.map((patient) =>
+          db.patients.update(patient.id, {
+            mainMedicalInstitutionId:
+              patient.mainMedicalInstitutionId === editingInstitution.id ? "" : patient.mainMedicalInstitutionId || "",
+            additionalMedicalInstitutionIds: (patient.additionalMedicalInstitutionIds || []).filter(
+              (id) => id !== editingInstitution.id
+            ),
+            updatedAt: nowString()
+          })
+        )
+      );
+      await db.medicationPackageItems
+        .where("clinicName")
+        .equals(editingInstitution.name)
+        .modify({ clinicName: "", updatedAt: nowString() });
+    });
+    setEditingId("");
+    await reload();
+    setSaved("削除しました");
+  };
+
+  return (
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <section className="rounded-md border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+          <h1 className="text-2xl font-bold">医療機関一覧</h1>
+          <button
+            type="button"
+            onClick={() => setEditingId("")}
+            className="touch-target inline-flex items-center gap-2 rounded-md bg-care-700 px-4 py-2 font-semibold text-white"
+          >
+            <Plus size={20} />
+            新規
+          </button>
+        </div>
+        <div className="grid gap-3 border-b border-slate-100 p-4 md:grid-cols-[1fr_220px]">
+          <label className="relative">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
+              size={20}
+            />
+            <input
+              className="touch-target w-full rounded-md border border-slate-300 bg-white py-3 pl-10 pr-3 text-base"
+              placeholder="医療機関名・電話・FAXで検索"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          <select
+            className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.target.value as MedicalInstitutionType | "all")}
+          >
+            <option value="all">すべての種別</option>
+            {Object.entries(medicalInstitutionTypeLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {filteredInstitutions.length ? (
+            filteredInstitutions.map((institution) => {
+              const patientCount = getMedicalInstitutionPatientCount(institution.id, data.patients);
+              return (
+                <button
+                  key={institution.id}
+                  type="button"
+                  onClick={() => setEditingId(institution.id)}
+                  className={[
+                    "grid w-full gap-3 px-4 py-4 text-left hover:bg-slate-50 md:grid-cols-[1fr_120px_130px_130px_110px_100px]",
+                    editingId === institution.id ? "bg-care-50" : "bg-white"
+                  ].join(" ")}
+                >
+                  <span>
+                    <span className="block text-lg font-bold">{institution.name}</span>
+                    <span className="text-sm text-slate-600">{institution.kana}</span>
+                  </span>
+                  <span className="self-center font-semibold">{medicalInstitutionTypeLabels[institution.type]}</span>
+                  <span className="self-center">{institution.phone || "-"}</span>
+                  <span className="self-center">{institution.fax || "-"}</span>
+                  <span className="self-center">
+                    {institution.isMainHomeCareClinic ? <Badge tone="care">対象</Badge> : <Badge tone="slate">-</Badge>}
+                  </span>
+                  <span className="self-center font-bold">{patientCount}人</span>
+                </button>
+              );
+            })
+          ) : (
+            <p className="p-5 text-slate-600">該当する医療機関はありません</p>
+          )}
+        </div>
+      </section>
+
+      <aside className="rounded-md border border-slate-200 bg-white p-4">
+        <h2 className="text-xl font-bold">{editingInstitution ? "医療機関編集" : "医療機関追加"}</h2>
+        <div className="mt-4 grid gap-3">
+          <TextInput label="医療機関名" value={form.name} onChange={(value) => updateForm("name", value)} />
+          <TextInput label="フリガナ" value={form.kana} onChange={(value) => updateForm("kana", value)} />
+          <label className="grid gap-1">
+            <span className="font-semibold text-slate-700">種別</span>
+            <select
+              className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+              value={form.type}
+              onChange={(event) => updateForm("type", event.target.value as MedicalInstitutionType)}
+            >
+              {Object.entries(medicalInstitutionTypeLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TextInput label="電話番号" value={form.phone} onChange={(value) => updateForm("phone", value)} />
+          <TextInput label="FAX" value={form.fax} onChange={(value) => updateForm("fax", value)} />
+          <TextInput label="住所" value={form.address} onChange={(value) => updateForm("address", value)} />
+          <Toggle
+            label="メイン在宅クリニック対象"
+            checked={form.isMainHomeCareClinic}
+            onChange={(value) => updateForm("isMainHomeCareClinic", value)}
+          />
+          <label className="grid gap-1">
+            <span className="font-semibold text-slate-700">メモ</span>
+            <textarea
+              className="min-h-28 rounded-md border border-slate-300 px-3 py-3"
+              value={form.memo}
+              onChange={(event) => updateForm("memo", event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void saveInstitution()}
+            className="touch-target rounded-md bg-care-700 px-5 py-3 font-semibold text-white"
+          >
+            保存
+          </button>
+          {editingInstitution ? (
+            <button
+              type="button"
+              onClick={() => void deleteInstitution()}
+              className="touch-target rounded-md bg-rose-600 px-5 py-3 font-semibold text-white"
+            >
+              医療機関を削除
+            </button>
+          ) : null}
+        </div>
+      </aside>
+
+      {saved ? (
+        <div className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-md bg-slate-900 px-5 py-3 font-semibold text-white shadow-lg">
+          {saved}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -2273,10 +2685,14 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
       )
     : undefined;
   const patternItems = pattern
-    ? data.medicationPackageItems
-        .filter((item) => item.patternId === pattern.id)
-        .sort((a, b) => a.order - b.order)
+    ? sortPackageItemsForPatient(
+        patient,
+        data.medicationPackageItems.filter((item) => item.patternId === pattern.id),
+        data.medicalInstitutions
+      )
     : [];
+  const linkedInstitutions = patient ? getPatientMedicalInstitutions(patient, data.medicalInstitutions) : [];
+  const packageInstitutionOptions = linkedInstitutions.length ? linkedInstitutions : data.medicalInstitutions;
   const [draft, setDraft] = useState<Omit<MedicationPackageItem, "id" | "patternId" | "order" | "createdAt" | "updatedAt">>({
     dosageForm: "tablet",
     quantity: "",
@@ -2308,16 +2724,18 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
 
   const addPackageItem = async () => {
     const targetPattern = await ensurePattern();
-    if (!targetPattern) return;
+    if (!targetPattern || !patient) return;
     const timestamp = nowString();
-    await db.medicationPackageItems.add({
+    const nextItem: MedicationPackageItem = {
       ...draft,
       id: createId(),
       patternId: targetPattern.id,
       order: patternItems.length,
       createdAt: timestamp,
       updatedAt: timestamp
-    });
+    };
+    await db.medicationPackageItems.add(nextItem);
+    await normalizePackageOrder(sortPackageItemsForPatient(patient, [...patternItems, nextItem], data.medicalInstitutions));
     setDraft({
       dosageForm: "tablet",
       quantity: "",
@@ -2332,7 +2750,13 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
   };
 
   const updatePackageItem = async (item: MedicationPackageItem, patch: Partial<MedicationPackageItem>) => {
-    await db.medicationPackageItems.update(item.id, { ...patch, updatedAt: nowString() });
+    if (!patient) return;
+    const updatedAt = nowString();
+    await db.medicationPackageItems.update(item.id, { ...patch, updatedAt });
+    const nextItems = patternItems.map((current) =>
+      current.id === item.id ? { ...current, ...patch, updatedAt } : current
+    );
+    await normalizePackageOrder(sortPackageItemsForPatient(patient, nextItems, data.medicalInstitutions));
     await reload();
   };
 
@@ -2426,9 +2850,10 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                       value={item.medicineName}
                       onChange={(value) => void updatePackageItem(item, { medicineName: value })}
                     />
-                    <TextInput
+                    <MedicalInstitutionSelect
                       label="医療機関"
                       value={item.clinicName}
+                      institutions={packageInstitutionOptions}
                       onChange={(value) => void updatePackageItem(item, { clinicName: value })}
                     />
                   </div>
@@ -2508,7 +2933,12 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                 </label>
                 <TextInput label="数量" value={draft.quantity} onChange={(value) => setDraft((current) => ({ ...current, quantity: value }))} />
                 <TextInput label="薬剤名" value={draft.medicineName} onChange={(value) => setDraft((current) => ({ ...current, medicineName: value }))} />
-                <TextInput label="医療機関" value={draft.clinicName} onChange={(value) => setDraft((current) => ({ ...current, clinicName: value }))} />
+                <MedicalInstitutionSelect
+                  label="医療機関"
+                  value={draft.clinicName}
+                  institutions={packageInstitutionOptions}
+                  onChange={(value) => setDraft((current) => ({ ...current, clinicName: value }))}
+                />
                 <Toggle label="臨時薬" checked={draft.isTemporary} onChange={(value) => setDraft((current) => ({ ...current, isTemporary: value }))} />
                 <Toggle label="中止薬" checked={draft.isStopped} onChange={(value) => setDraft((current) => ({ ...current, isStopped: value }))} />
                 <Toggle label="自己調節薬" checked={draft.isSelfAdjustment} onChange={(value) => setDraft((current) => ({ ...current, isSelfAdjustment: value }))} />
@@ -2530,9 +2960,11 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                     (item) => item.patientId === patient.id && item.timing === timing
                   );
                   const targetItems = targetPattern
-                    ? data.medicationPackageItems
-                        .filter((item) => item.patternId === targetPattern.id)
-                        .sort((a, b) => a.order - b.order)
+                    ? sortPackageItemsForPatient(
+                        patient,
+                        data.medicationPackageItems.filter((item) => item.patternId === targetPattern.id),
+                        data.medicalInstitutions
+                      )
                     : [];
                   return <MedicationLine key={timing} timing={timing} items={targetItems} />;
                 })}
@@ -2645,6 +3077,38 @@ function DateInput({ label, value, onChange }: { label: string; value: string; o
   return <TextInput label={label} type="date" value={value} onChange={onChange} />;
 }
 
+function MedicalInstitutionSelect({
+  label,
+  value,
+  institutions,
+  onChange
+}: {
+  label: string;
+  value: string;
+  institutions: MedicalInstitution[];
+  onChange: (value: string) => void;
+}) {
+  const hasCurrentValue = Boolean(value) && !institutions.some((institution) => institution.name === value);
+  return (
+    <label className="grid gap-1">
+      <span className="font-semibold text-slate-700">{label}</span>
+      <select
+        className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">未選択</option>
+        {hasCurrentValue ? <option value={value}>{value}</option> : null}
+        {institutions.map((institution) => (
+          <option key={institution.id} value={institution.name}>
+            {institution.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
     <label className="touch-target flex cursor-pointer items-center gap-3 rounded-md border border-slate-200 bg-white px-3 py-2">
@@ -2743,17 +3207,39 @@ function sortPatientsByOrder(patients: Patient[]) {
   });
 }
 
+function getFacilityCalendarSlots(patients: Patient[]) {
+  const slots: Array<{ slotNumber: number; patient?: Patient }> = Array.from({ length: 20 }, (_, index) => ({
+    slotNumber: index + 1
+  }));
+
+  patients.forEach((patient) => {
+    const slot = patient.facilityCalendarSlot;
+    if (!slot || slot < 1 || slot > 20) return;
+    if (!slots[slot - 1].patient) {
+      slots[slot - 1].patient = patient;
+    }
+  });
+  return slots;
+}
+
 function getLatestMedicationCalendar(patientId: string, calendars: MedicationCalendar[]) {
   return calendars
     .filter((calendar) => calendar.patientId === patientId)
     .sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
 }
 
-function getPatternItems(patterns: MedicationPackagePattern[], items: MedicationPackageItem[]) {
+function getPatternItems(
+  patterns: MedicationPackagePattern[],
+  items: MedicationPackageItem[],
+  patient?: Patient,
+  institutions: MedicalInstitution[] = []
+) {
   return patterns.reduce<Record<MedicationTiming, MedicationPackageItem[]>>((acc, pattern) => {
-    acc[pattern.timing] = items
-      .filter((item) => item.patternId === pattern.id)
-      .sort((a, b) => a.order - b.order);
+    acc[pattern.timing] = sortPackageItemsForPatient(
+      patient,
+      items.filter((item) => item.patternId === pattern.id),
+      institutions
+    );
     return acc;
   }, {} as Record<MedicationTiming, MedicationPackageItem[]>);
 }
@@ -2781,8 +3267,13 @@ function formatPackageItem(item: MedicationPackageItem) {
   return `${base}${temporary}${stopped}`;
 }
 
-function getPackageCount(patterns: MedicationPackagePattern[], items: MedicationPackageItem[]) {
-  const packageItems = getPatternItems(patterns, items);
+function getPackageCount(
+  patterns: MedicationPackagePattern[],
+  items: MedicationPackageItem[],
+  patient?: Patient,
+  institutions: MedicalInstitution[] = []
+) {
+  const packageItems = getPatternItems(patterns, items, patient, institutions);
   return medicationCoreTimings.reduce((count, timing) => count + (packageItems[timing]?.length || 0), 0);
 }
 
@@ -2796,9 +3287,117 @@ async function normalizePackageOrder(items: MedicationPackageItem[]) {
   );
 }
 
+function sortPackageItemsForPatient(
+  patient: Patient | undefined,
+  items: MedicationPackageItem[],
+  institutions: MedicalInstitution[]
+) {
+  return [...items].sort((a, b) => {
+    const institutionRankDiff =
+      getPackageInstitutionRank(patient, a.clinicName, institutions) -
+      getPackageInstitutionRank(patient, b.clinicName, institutions);
+    if (institutionRankDiff !== 0) return institutionRankDiff;
+    const dosageRankDiff = getDosageFormRank(a.dosageForm) - getDosageFormRank(b.dosageForm);
+    if (dosageRankDiff !== 0) return dosageRankDiff;
+    return a.order - b.order;
+  });
+}
+
+function getPackageInstitutionRank(
+  patient: Patient | undefined,
+  clinicName: string,
+  institutions: MedicalInstitution[]
+) {
+  const institution = institutions.find((item) => item.name === clinicName);
+  if (!patient || !institution) return 999;
+  if (patient.mainMedicalInstitutionId === institution.id) return 0;
+  const additionalIndex = (patient.additionalMedicalInstitutionIds || []).indexOf(institution.id);
+  if (additionalIndex >= 0) return additionalIndex + 1;
+  return 500;
+}
+
+function getDosageFormRank(dosageForm: DosageForm) {
+  const ranks: Record<DosageForm, number> = {
+    tablet: 0,
+    powder: 1,
+    magnesium: 2,
+    patch: 3,
+    kampo: 4,
+    other: 5
+  };
+  return ranks[dosageForm];
+}
+
+function getPatientMedicalInstitutions(patient: Patient, institutions: MedicalInstitution[]) {
+  const ids = [
+    patient.mainMedicalInstitutionId,
+    ...(patient.additionalMedicalInstitutionIds || [])
+  ].filter((id): id is string => Boolean(id));
+  return ids
+    .map((id) => institutions.find((institution) => institution.id === id))
+    .filter((institution): institution is MedicalInstitution => Boolean(institution));
+}
+
+function getMedicalInstitutionPatientCount(institutionId: string, patients: Patient[]) {
+  return patients.filter(
+    (patient) =>
+      patient.mainMedicalInstitutionId === institutionId ||
+      (patient.additionalMedicalInstitutionIds || []).includes(institutionId)
+  ).length;
+}
+
+async function deletePatientCascade(patientId: string) {
+  const calendars = await db.medicationCalendars.where("patientId").equals(patientId).toArray();
+  const calendarIds = calendars.map((calendar) => calendar.id);
+  const calendarDays = calendarIds.length
+    ? await db.medicationCalendarDays.where("calendarId").anyOf(calendarIds).toArray()
+    : [];
+  const calendarDayIds = calendarDays.map((day) => day.id);
+  const packagePatterns = await db.medicationPackagePatterns.where("patientId").equals(patientId).toArray();
+  const packagePatternIds = packagePatterns.map((pattern) => pattern.id);
+
+  await db.transaction(
+    "rw",
+    [
+      db.patients,
+      db.visits,
+      db.tasks,
+      db.checklists,
+      db.medicationCalendars,
+      db.medicationCalendarDays,
+      db.medicationCalendarAudits,
+      db.medicationPackagePatterns,
+      db.medicationPackageItems
+    ],
+    async () => {
+      await Promise.all([
+        db.patients.delete(patientId),
+        db.visits.where("patientId").equals(patientId).delete(),
+        db.tasks.where("patientId").equals(patientId).delete(),
+        db.checklists.where("patientId").equals(patientId).delete(),
+        db.medicationCalendars.where("patientId").equals(patientId).delete(),
+        calendarIds.length
+          ? db.medicationCalendarDays.where("calendarId").anyOf(calendarIds).delete()
+          : Promise.resolve(0),
+        calendarDayIds.length
+          ? db.medicationCalendarAudits.where("calendarDayId").anyOf(calendarDayIds).delete()
+          : Promise.resolve(0),
+        db.medicationPackagePatterns.where("patientId").equals(patientId).delete(),
+        packagePatternIds.length
+          ? db.medicationPackageItems.where("patternId").anyOf(packagePatternIds).delete()
+          : Promise.resolve(0)
+      ]);
+    }
+  );
+}
+
 function toPatientForm(patient: Patient): PatientFormValues {
-  const { id, createdAt, updatedAt, ...form } = patient;
-  return form;
+  const { id, order, createdAt, updatedAt, ...form } = patient;
+  return {
+    ...form,
+    mainMedicalInstitutionId: patient.mainMedicalInstitutionId || "",
+    additionalMedicalInstitutionIds: patient.additionalMedicalInstitutionIds || []
+  };
 }
 
 function setVisitValue<K extends keyof Visit>(
