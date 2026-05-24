@@ -6,7 +6,9 @@ import type {
   MedicationCalendar,
   MedicationCalendarAudit,
   MedicationCalendarDay,
+  MedicationClinicCutoff,
   MedicationPackageItem,
+  MedicationPackagePhoto,
   MedicationPackagePattern,
   Patient,
   Task,
@@ -25,6 +27,8 @@ class HomecareDatabase extends Dexie {
   medicationCalendarAudits!: Table<MedicationCalendarAudit, string>;
   medicationPackagePatterns!: Table<MedicationPackagePattern, string>;
   medicationPackageItems!: Table<MedicationPackageItem, string>;
+  medicationPackagePhotos!: Table<MedicationPackagePhoto, string>;
+  medicationClinicCutoffs!: Table<MedicationClinicCutoff, string>;
   medicalInstitutions!: Table<MedicalInstitution, string>;
 
   constructor() {
@@ -88,6 +92,67 @@ class HomecareDatabase extends Dexie {
           }
         });
       });
+    this.version(5)
+      .stores({
+        patients: "id, order, name, kana, facilityName, mainMedicalInstitutionId, nextVisitDate, updatedAt",
+        visits: "id, patientId, visitDate, deliveryDate, nextRefillDate, completed",
+        tasks: "id, patientId, type, dueDate, completed",
+        checklists: "id, patientId, date, completed",
+        medicationCalendars: "id, patientId, startDate, endDate, status, updatedAt",
+        medicationCalendarDays: "id, calendarId, date, checked, hasIssue",
+        medicationCalendarAudits: "id, calendarDayId, timing, auditedAt",
+        medicationPackagePatterns: "id, patientId, timing, updatedAt",
+        medicationPackageItems: "id, patternId, order, dosageForm, clinicName, updatedAt",
+        medicalInstitutions: "id, name, kana, type, homeVisitWeekday, isMainHomeCareClinic, updatedAt"
+      })
+      .upgrade(async (tx) => {
+        await tx.table("patients").toCollection().modify((patient) => {
+          if (patient.lastVisitDate === undefined) {
+            patient.lastVisitDate = "";
+          }
+          if (patient.prescriptionDays === undefined) {
+            patient.prescriptionDays = 0;
+          }
+          if (patient.nextVisitDate === undefined) {
+            patient.nextVisitDate = "";
+          }
+          if (patient.isNextVisitDateManual === undefined) {
+            patient.isNextVisitDateManual = false;
+          }
+        });
+        await tx.table("medicalInstitutions").toCollection().modify((institution) => {
+          if (institution.homeVisitWeekday === undefined) {
+            institution.homeVisitWeekday = "";
+          }
+        });
+      });
+    this.version(6).stores({
+      patients: "id, order, name, kana, facilityName, mainMedicalInstitutionId, nextVisitDate, updatedAt",
+      visits: "id, patientId, visitDate, deliveryDate, nextRefillDate, completed",
+      tasks: "id, patientId, type, dueDate, completed",
+      checklists: "id, patientId, date, completed",
+      medicationCalendars: "id, patientId, startDate, endDate, status, updatedAt",
+      medicationCalendarDays: "id, calendarId, date, checked, hasIssue",
+      medicationCalendarAudits: "id, calendarDayId, timing, auditedAt",
+      medicationPackagePatterns: "id, patientId, timing, updatedAt",
+      medicationPackageItems: "id, patternId, order, dosageForm, clinicName, updatedAt",
+      medicationPackagePhotos: "id, patientId, createdAt, updatedAt",
+      medicalInstitutions: "id, name, kana, type, homeVisitWeekday, isMainHomeCareClinic, updatedAt"
+    });
+    this.version(7).stores({
+      patients: "id, order, name, kana, facilityName, mainMedicalInstitutionId, nextVisitDate, updatedAt",
+      visits: "id, patientId, visitDate, deliveryDate, nextRefillDate, completed",
+      tasks: "id, patientId, type, dueDate, completed",
+      checklists: "id, patientId, date, completed",
+      medicationCalendars: "id, patientId, startDate, endDate, status, updatedAt",
+      medicationCalendarDays: "id, calendarId, date, checked, hasIssue",
+      medicationCalendarAudits: "id, calendarDayId, timing, auditedAt",
+      medicationPackagePatterns: "id, patientId, timing, updatedAt",
+      medicationPackageItems: "id, patternId, order, dosageForm, clinicName, updatedAt",
+      medicationPackagePhotos: "id, patientId, createdAt, updatedAt",
+      medicationClinicCutoffs: "id, patientId, medicalInstitutionId, nextCutoffDate, updatedAt",
+      medicalInstitutions: "id, name, kana, type, homeVisitWeekday, isMainHomeCareClinic, updatedAt"
+    });
   }
 }
 
@@ -118,7 +183,9 @@ export async function seedSampleData() {
       db.medicationCalendarDays,
       db.medicationCalendarAudits,
       db.medicationPackagePatterns,
-      db.medicationPackageItems
+      db.medicationPackageItems,
+      db.medicationPackagePhotos,
+      db.medicationClinicCutoffs
     ],
     async () => {
     await db.patients.add({
@@ -333,8 +400,10 @@ export async function seedSampleData() {
 }
 
 async function seedMedicalInstitutions() {
-  const institutionCount = await db.medicalInstitutions.count();
-  if (institutionCount > 0) return;
-
-  await db.medicalInstitutions.bulkPut(initialMedicalInstitutions as MedicalInstitution[]);
+  const institutions = initialMedicalInstitutions as MedicalInstitution[];
+  const existingIds = new Set((await db.medicalInstitutions.toArray()).map((institution) => institution.id));
+  const missingInstitutions = institutions.filter((institution) => !existingIds.has(institution.id));
+  if (missingInstitutions.length) {
+    await db.medicalInstitutions.bulkAdd(missingInstitutions);
+  }
 }

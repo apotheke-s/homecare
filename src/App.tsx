@@ -50,15 +50,18 @@ import { addDays, eachDayOfInterval, format, parseISO } from "date-fns";
 import { db, seedSampleData } from "./db";
 import type {
   Checklist,
+  HomeVisitWeekday,
   MedicalInstitution,
   MedicalInstitutionType,
   MedicationCalendar,
   MedicationCalendarAudit,
   MedicationCalendarDay,
   MedicationCalendarStatus,
+  MedicationClinicCutoff,
   MedicationTiming,
   DosageForm,
   MedicationPackageItem,
+  MedicationPackagePhoto,
   MedicationPackagePattern,
   Patient,
   PatientFormValues,
@@ -89,6 +92,8 @@ type AppData = {
   medicationCalendarAudits: MedicationCalendarAudit[];
   medicationPackagePatterns: MedicationPackagePattern[];
   medicationPackageItems: MedicationPackageItem[];
+  medicationPackagePhotos: MedicationPackagePhoto[];
+  medicationClinicCutoffs: MedicationClinicCutoff[];
   medicalInstitutions: MedicalInstitution[];
 };
 
@@ -151,17 +156,31 @@ const medicalInstitutionTypeLabels: Record<MedicalInstitutionType, string> = {
   other: "その他"
 };
 
+const homeVisitWeekdayLabels: Record<HomeVisitWeekday, string> = {
+  monday: "月曜日",
+  tuesday: "火曜日",
+  wednesday: "水曜日",
+  thursday: "木曜日",
+  friday: "金曜日",
+  saturday: "土曜日",
+  sunday: "日曜日"
+};
+
 const emptyPatientForm: PatientFormValues = {
   name: "",
   kana: "",
   birthday: "",
   locationType: "home",
-  facilityName: "",
+  facilityName: "個人宅",
   address: "",
   phone: "",
   doctorName: "",
   mainMedicalInstitutionId: "",
   additionalMedicalInstitutionIds: [],
+  lastVisitDate: "",
+  prescriptionDays: 0,
+  nextVisitDate: "",
+  isNextVisitDateManual: false,
   nurseContact: "",
   familyContact: "",
   hasOneDosePackage: false,
@@ -178,6 +197,7 @@ const emptyMedicalInstitutionForm: Omit<MedicalInstitution, "id" | "createdAt" |
   phone: "",
   fax: "",
   address: "",
+  homeVisitWeekday: "",
   memo: "",
   isMainHomeCareClinic: false
 };
@@ -286,6 +306,8 @@ function App() {
     medicationCalendarAudits: [],
     medicationPackagePatterns: [],
     medicationPackageItems: [],
+    medicationPackagePhotos: [],
+    medicationClinicCutoffs: [],
     medicalInstitutions: []
   });
   const [loading, setLoading] = useState(true);
@@ -304,6 +326,8 @@ function App() {
       medicationCalendarAudits,
       medicationPackagePatterns,
       medicationPackageItems,
+      medicationPackagePhotos,
+      medicationClinicCutoffs,
       medicalInstitutions
     ] = await Promise.all([
       db.patients.toArray(),
@@ -315,6 +339,8 @@ function App() {
       db.medicationCalendarAudits.toArray(),
       db.medicationPackagePatterns.toArray(),
       db.medicationPackageItems.toArray(),
+      db.medicationPackagePhotos.toArray(),
+      db.medicationClinicCutoffs.toArray(),
       db.medicalInstitutions.orderBy("name").toArray()
     ]);
     setData({
@@ -327,6 +353,8 @@ function App() {
       medicationCalendarAudits,
       medicationPackagePatterns,
       medicationPackageItems,
+      medicationPackagePhotos,
+      medicationClinicCutoffs,
       medicalInstitutions
     });
   };
@@ -997,7 +1025,7 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
               老人ホームRカレンダー
             </h1>
             <p className="mt-1 text-slate-600">
-              施設名が老人ホームRの患者だけを、服薬カレンダー鑑査と同じカードで20マスへ固定表示します。
+              施設名が老人ホームRの患者だけを、20マスへ固定表示します。
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -1106,6 +1134,8 @@ function DraggableFacilityRPatientCard({
         reorderMode={reorderMode}
         slotNumber={slotNumber}
         dragHandleProps={{ ...attributes, ...listeners }}
+        showAuditStatus={false}
+        showFacilityName={false}
       />
     </div>
   );
@@ -1254,13 +1284,17 @@ function MedicationPatientCard({
   data,
   reorderMode,
   slotNumber,
-  dragHandleProps
+  dragHandleProps,
+  showAuditStatus = true,
+  showFacilityName = true
 }: {
   patient: Patient;
   data: AppData;
   reorderMode: boolean;
   slotNumber?: number;
   dragHandleProps: Record<string, unknown>;
+  showAuditStatus?: boolean;
+  showFacilityName?: boolean;
 }) {
   const calendar = getLatestMedicationCalendar(patient.id, data.medicationCalendars);
   const days = calendar ? data.medicationCalendarDays.filter((day) => day.calendarId === calendar.id) : [];
@@ -1269,20 +1303,25 @@ function MedicationPatientCard({
   const issueCount = days.filter((day) => day.hasIssue || day.issueMemo || getMedicationDayDataWarnings(day).length).length;
   const packageCount = getPackageCount(patterns, data.medicationPackageItems, patient, data.medicalInstitutions);
   const status = calendar?.status || "notStarted";
-  const cardTone = {
-    notStarted: "border-slate-200 bg-white",
-    inProgress: "border-amber-200 bg-amber-50",
-    needsReview: "border-rose-200 bg-rose-50",
-    completed: "border-care-100 bg-care-50"
-  }[status];
+  const cutoffSummary = getCutoffSummary(
+    data.medicationClinicCutoffs.filter((cutoff) => cutoff.patientId === patient.id)
+  );
+  const cardTone = showAuditStatus
+    ? {
+        notStarted: "border-slate-200 bg-white",
+        inProgress: "border-amber-200 bg-amber-50",
+        needsReview: "border-rose-200 bg-rose-50",
+        completed: "border-care-100 bg-care-50"
+      }[status]
+    : "border-slate-200 bg-white";
 
   const content = (
     <article className={`h-full rounded-md border p-4 ${cardTone}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          {slotNumber ? <p className="text-sm font-bold text-slate-500">{slotNumber}</p> : null}
+          {slotNumber && showAuditStatus ? <p className="text-sm font-bold text-slate-500">位置番号：{slotNumber}</p> : null}
           <h2 className="text-xl font-bold">{patient.name}</h2>
-          <p className="text-slate-600">{patient.facilityName || "自宅"}</p>
+          {showFacilityName ? <p className="text-slate-600">{patient.facilityName || "自宅"}</p> : null}
         </div>
         {reorderMode ? (
           <button
@@ -1296,28 +1335,46 @@ function MedicationPatientCard({
         ) : null}
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Badge tone={status === "completed" ? "care" : status === "needsReview" ? "rose" : status === "inProgress" ? "amber" : "slate"}>
-          {medicationStatusLabels[status]}
-        </Badge>
-        <Badge tone={issueCount ? "rose" : "slate"}>要確認 {issueCount}</Badge>
-        <Badge tone="slate">完了率 {getMedicationCompletionRate(days)}%</Badge>
-      </div>
+      {showAuditStatus ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Badge tone={status === "completed" ? "care" : status === "needsReview" ? "rose" : status === "inProgress" ? "amber" : "slate"}>
+            {medicationStatusLabels[status]}
+          </Badge>
+          <Badge tone={issueCount ? "rose" : "slate"}>要確認 {issueCount}</Badge>
+          <Badge tone="slate">完了率 {getMedicationCompletionRate(days)}%</Badge>
+        </div>
+      ) : null}
 
-      <p className="mt-3 text-sm font-semibold text-slate-700">
-        対象期間 {calendar ? `${formatDateLabel(calendar.startDate)} - ${formatDateLabel(calendar.endDate)}` : "未作成"}
-      </p>
+      {showAuditStatus ? (
+        <p className="mt-3 text-sm font-semibold text-slate-700">
+          対象期間 {calendar ? `${formatDateLabel(calendar.startDate)} - ${formatDateLabel(calendar.endDate)}` : "未作成"}
+        </p>
+      ) : (
+        <div className="mt-3 space-y-1 text-sm font-semibold text-slate-700">
+          <p>設置期間：{cutoffSummary.installationPeriod || "未設定"}</p>
+          <p>最短切日：{cutoffSummary.shortestCutoffDate ? formatDateLabel(cutoffSummary.shortestCutoffDate) : "未設定"}</p>
+          <p>鑑査状態：{medicationStatusLabels[status]}</p>
+        </div>
+      )}
 
       <div className="mt-3 space-y-2">
         {medicationCoreTimings.map((timing) => (
-          <MedicationLine key={timing} timing={timing} items={items[timing] || []} />
+          <MedicationLine
+            key={timing}
+            timing={timing}
+            items={items[timing] || []}
+            labelOverride={!showAuditStatus && timing === "bedtime" ? "寝" : undefined}
+            showPackageCount={!showAuditStatus}
+          />
         ))}
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 text-sm font-semibold text-slate-700">
-        <span>包数：{packageCount} / {days.length ? packageCount : 0}</span>
-        <span>順番：{status === "completed" ? "確認済み" : "未確認"}</span>
-      </div>
+      {showAuditStatus ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-sm font-semibold text-slate-700">
+          <span>包数：{packageCount}</span>
+          <span>順番：{status === "completed" ? "確認済み" : "未確認"}</span>
+        </div>
+      ) : null}
       {hasTemporaryItem(items) ? <p className="mt-2 font-bold text-amber-800">臨時あり</p> : null}
     </article>
   );
@@ -1330,10 +1387,23 @@ function MedicationPatientCard({
   );
 }
 
-function MedicationLine({ timing, items }: { timing: MedicationTiming; items: MedicationPackageItem[] }) {
+function MedicationLine({
+  timing,
+  items,
+  labelOverride,
+  showPackageCount = false
+}: {
+  timing: MedicationTiming;
+  items: MedicationPackageItem[];
+  labelOverride?: string;
+  showPackageCount?: boolean;
+}) {
   return (
     <p className={items.length ? "text-slate-900" : "rounded-md bg-slate-100 px-2 py-1 italic text-slate-500"}>
-      <span className="font-bold">{medicationTimingLabels[timing]}：</span>
+      <span className="font-bold">
+        {labelOverride || medicationTimingLabels[timing]}
+        {showPackageCount ? `（${items.length}）` : ""}：
+      </span>
       {formatPackageItems(items)}
     </p>
   );
@@ -1467,6 +1537,7 @@ function PatientDetail({
   const [saved, setSaved] = useState("");
   const [activeTab, setActiveTab] = useState<PatientDetailTab>("basic");
   const [form, setForm] = useState<PatientFormValues>(patient ? toPatientForm(patient) : emptyPatientForm);
+  const [outpatientInstitutionId, setOutpatientInstitutionId] = useState("");
   const existingVisit = patient ? data.visits.find((visit) => visit.patientId === patient.id && !visit.completed) : undefined;
   const [visit, setVisit] = useState<Visit>(existingVisit || emptyVisit(patient?.id || ""));
   const existingChecklist = patient
@@ -1479,6 +1550,22 @@ function PatientDetail({
     ? data.medicationCalendars.filter((calendar) => calendar.patientId === patient.id)
     : [];
   const refillDays = daysUntil(visit.nextRefillDate);
+  const selectedMainInstitution = data.medicalInstitutions.find(
+    (institution) => institution.id === form.mainMedicalInstitutionId
+  );
+  const calculatedNextVisitDate = calcNextHomeVisitDate(
+    form.lastVisitDate || "",
+    Number(form.prescriptionDays) || 0,
+    selectedMainInstitution?.homeVisitWeekday || ""
+  );
+  const displayedNextVisitDate = form.isNextVisitDateManual
+    ? form.nextVisitDate || ""
+    : calculatedNextVisitDate;
+  const registeredLocationOptions = useMemo(
+    () => getRegisteredLocationOptions(data.patients),
+    [data.patients]
+  );
+  const isCustomLocation = !registeredLocationOptions.includes(form.facilityName || "");
 
   useEffect(() => {
     if (!saved) return undefined;
@@ -1489,6 +1576,23 @@ function PatientDetail({
   const updateForm = <K extends keyof PatientFormValues>(key: K, value: PatientFormValues[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
+  const updateLocationLabel = (value: string) => {
+    const label = value.trim();
+    setForm((current) => ({
+      ...current,
+      locationType: label === "個人宅" || !label ? "home" : "facility",
+      facilityName: label
+    }));
+  };
+  const selectLocationLabel = (value: string) => {
+    if (value === "__custom__") {
+      if (!isCustomLocation) {
+        updateLocationLabel("");
+      }
+      return;
+    }
+    updateLocationLabel(value);
+  };
 
   const savePatient = async () => {
     if (!form.name.trim()) {
@@ -1498,12 +1602,19 @@ function PatientDetail({
 
     const timestamp = nowString();
     const patientId = patient?.id || createId();
+    const locationLabel = form.facilityName.trim() || "個人宅";
     const payload: Patient = {
       ...form,
       id: patientId,
       order: patient?.order ?? data.patients.length,
+      locationType: locationLabel === "個人宅" ? "home" : "facility",
+      facilityName: locationLabel,
       mainMedicalInstitutionId: form.mainMedicalInstitutionId || "",
       additionalMedicalInstitutionIds: form.additionalMedicalInstitutionIds || [],
+      lastVisitDate: form.lastVisitDate || "",
+      prescriptionDays: Number(form.prescriptionDays) || 0,
+      nextVisitDate: form.isNextVisitDateManual ? form.nextVisitDate || "" : calculatedNextVisitDate,
+      isNextVisitDateManual: Boolean(form.isNextVisitDateManual),
       createdAt: patient?.createdAt || timestamp,
       updatedAt: timestamp
     };
@@ -1569,6 +1680,13 @@ function PatientDetail({
   };
 
   const additionalInstitutionIds = form.additionalMedicalInstitutionIds || [];
+  const outpatientInstitutions = additionalInstitutionIds
+    .map((id) => data.medicalInstitutions.find((institution) => institution.id === id))
+    .filter((institution): institution is MedicalInstitution => Boolean(institution));
+  const outpatientOptions = data.medicalInstitutions.filter(
+    (institution) =>
+      institution.id !== form.mainMedicalInstitutionId && !additionalInstitutionIds.includes(institution.id)
+  );
   const updateMainInstitution = (id: string) => {
     setForm((current) => ({
       ...current,
@@ -1576,16 +1694,38 @@ function PatientDetail({
       additionalMedicalInstitutionIds: (current.additionalMedicalInstitutionIds || []).filter((item) => item !== id)
     }));
   };
-  const toggleAdditionalInstitution = (id: string, checked: boolean) => {
+  const addOutpatientInstitution = () => {
+    if (!outpatientInstitutionId) return;
     setForm((current) => {
       const currentIds = current.additionalMedicalInstitutionIds || [];
       return {
         ...current,
-        additionalMedicalInstitutionIds: checked
-          ? Array.from(new Set([...currentIds, id])).filter((item) => item !== current.mainMedicalInstitutionId)
-          : currentIds.filter((item) => item !== id)
+        additionalMedicalInstitutionIds: Array.from(new Set([...currentIds, outpatientInstitutionId])).filter(
+          (item) => item !== current.mainMedicalInstitutionId
+        )
       };
     });
+    setOutpatientInstitutionId("");
+  };
+  const removeOutpatientInstitution = (id: string) => {
+    setForm((current) => ({
+      ...current,
+      additionalMedicalInstitutionIds: (current.additionalMedicalInstitutionIds || []).filter((item) => item !== id)
+    }));
+  };
+  const enableManualNextVisitDate = () => {
+    setForm((current) => ({
+      ...current,
+      isNextVisitDateManual: true,
+      nextVisitDate: current.nextVisitDate || calculatedNextVisitDate
+    }));
+  };
+  const disableManualNextVisitDate = () => {
+    setForm((current) => ({
+      ...current,
+      isNextVisitDateManual: false,
+      nextVisitDate: calculatedNextVisitDate
+    }));
   };
 
   return (
@@ -1612,22 +1752,32 @@ function PatientDetail({
           <TextInput label="フリガナ" value={form.kana} onChange={(value) => updateForm("kana", value)} />
           <TextInput label="生年月日" type="date" value={form.birthday} onChange={(value) => updateForm("birthday", value)} />
           <label className="grid gap-1">
-            <span className="font-semibold text-slate-700">施設名 / 自宅</span>
+            <span className="font-semibold text-slate-700">所属先</span>
             <select
               className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
-              value={form.locationType}
-              onChange={(event) => updateForm("locationType", event.target.value as PatientFormValues["locationType"])}
+              value={isCustomLocation ? "__custom__" : form.facilityName}
+              onChange={(event) => selectLocationLabel(event.target.value)}
             >
-              <option value="home">自宅</option>
-              <option value="facility">施設</option>
+              {registeredLocationOptions.map((location) => (
+                <option key={location} value={location}>
+                  {location}
+                </option>
+              ))}
+              <option value="__custom__">新しい所属先を入力</option>
             </select>
+            {isCustomLocation ? (
+              <input
+                className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+                placeholder="所属先名"
+                value={form.facilityName}
+                onInput={(event) => updateLocationLabel(event.currentTarget.value)}
+                onChange={(event) => updateLocationLabel(event.target.value)}
+              />
+            ) : null}
           </label>
-          <TextInput label="施設名" value={form.facilityName} onChange={(value) => updateForm("facilityName", value)} />
-          <TextInput label="住所" value={form.address} onChange={(value) => updateForm("address", value)} />
-          <TextInput label="電話番号" value={form.phone} onChange={(value) => updateForm("phone", value)} />
           <TextInput label="主治医" value={form.doctorName} onChange={(value) => updateForm("doctorName", value)} />
           <label className="grid gap-1">
-            <span className="font-semibold text-slate-700">主医療機関</span>
+            <span className="font-semibold text-slate-700">医療機関（居宅）</span>
             <select
               className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
               value={form.mainMedicalInstitutionId || ""}
@@ -1641,25 +1791,99 @@ function PatientDetail({
               ))}
             </select>
           </label>
-          <TextInput label="訪問看護" value={form.nurseContact} onChange={(value) => updateForm("nurseContact", value)} />
-          <TextInput label="家族連絡先" value={form.familyContact} onChange={(value) => updateForm("familyContact", value)} />
           <div className="grid gap-2 md:col-span-2">
-            <p className="font-semibold text-slate-700">追加医療機関</p>
-            <div className="grid gap-2 md:grid-cols-2">
-              {data.medicalInstitutions.length ? (
-                data.medicalInstitutions.map((institution) => (
-                  <Toggle
+            <p className="font-semibold text-slate-700">医療機関（外来）</p>
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+              <select
+                className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+                value={outpatientInstitutionId}
+                onChange={(event) => setOutpatientInstitutionId(event.target.value)}
+              >
+                <option value="">外来医療機関を選択</option>
+                {outpatientOptions.map((institution) => (
+                  <option key={institution.id} value={institution.id}>
+                    {institution.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={addOutpatientInstitution}
+                disabled={!outpatientInstitutionId}
+                className="touch-target rounded-md bg-care-700 px-5 py-3 font-semibold text-white disabled:bg-slate-300"
+              >
+                追加
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {outpatientInstitutions.length ? (
+                outpatientInstitutions.map((institution) => (
+                  <span
                     key={institution.id}
-                    label={`${institution.name}（${medicalInstitutionTypeLabels[institution.type]}）`}
-                    checked={additionalInstitutionIds.includes(institution.id)}
-                    onChange={(checked) => toggleAdditionalInstitution(institution.id, checked)}
-                  />
+                    className="inline-flex min-h-11 items-center gap-2 rounded-md bg-slate-100 px-3 py-2 font-semibold text-slate-800"
+                  >
+                    {institution.name}
+                    <button
+                      type="button"
+                      onClick={() => removeOutpatientInstitution(institution.id)}
+                      className="rounded-md bg-white px-2 py-1 text-sm font-bold text-rose-700"
+                    >
+                      削除
+                    </button>
+                  </span>
                 ))
               ) : (
-                <p className="rounded-md bg-slate-100 p-3 text-slate-600">医療機関一覧に登録がありません</p>
+                <p className="rounded-md bg-slate-100 p-3 text-slate-600">外来医療機関は未登録です</p>
               )}
             </div>
           </div>
+          <TextInput label="訪問看護" value={form.nurseContact} onChange={(value) => updateForm("nurseContact", value)} />
+          <TextInput label="家族連絡先" value={form.familyContact} onChange={(value) => updateForm("familyContact", value)} />
+          <section className="grid gap-3 rounded-md border border-care-100 bg-care-50 p-4 md:col-span-2 md:grid-cols-4">
+            <h2 className="text-lg font-bold text-care-950 md:col-span-4">往診日自動計算</h2>
+            <DateInput
+              label="前回往診日"
+              value={form.lastVisitDate || ""}
+              onChange={(value) => updateForm("lastVisitDate", value)}
+            />
+            <TextInput
+              label="処方日数"
+              type="number"
+              value={form.prescriptionDays ? String(form.prescriptionDays) : ""}
+              onChange={(value) => updateForm("prescriptionDays", Number(value) || 0)}
+            />
+            <div className="rounded-md border border-care-200 bg-white p-3">
+              <p className="font-semibold text-slate-700">医療機関の往診曜日</p>
+              <p className="mt-2 text-xl font-bold">
+                {selectedMainInstitution?.homeVisitWeekday
+                  ? homeVisitWeekdayLabels[selectedMainInstitution.homeVisitWeekday]
+                  : "未設定"}
+              </p>
+            </div>
+            <div className="grid gap-2">
+              {form.isNextVisitDateManual ? (
+                <DateInput
+                  label="次回往診日"
+                  value={form.nextVisitDate || ""}
+                  onChange={(value) => updateForm("nextVisitDate", value)}
+                />
+              ) : (
+                <div className="rounded-md border border-care-200 bg-white p-3">
+                  <p className="font-semibold text-slate-700">次回往診日 自動計算結果</p>
+                  <p className="mt-2 text-xl font-bold">
+                    {displayedNextVisitDate ? formatDateLabel(displayedNextVisitDate) : "計算条件を入力"}
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={form.isNextVisitDateManual ? disableManualNextVisitDate : enableManualNextVisitDate}
+                className="touch-target rounded-md border border-care-300 bg-white px-4 py-2 font-semibold text-care-950"
+              >
+                {form.isNextVisitDateManual ? "自動計算に戻す" : "手動修正"}
+              </button>
+            </div>
+          </section>
           <label className="grid gap-1 md:col-span-2">
             <span className="font-semibold text-slate-700">メモ</span>
             <textarea
@@ -2454,7 +2678,10 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
   useEffect(() => {
     if (editingInstitution) {
       const { id, createdAt, updatedAt, ...nextForm } = editingInstitution;
-      setForm(nextForm);
+      setForm({
+        ...nextForm,
+        homeVisitWeekday: nextForm.homeVisitWeekday || ""
+      });
     } else {
       setForm(emptyMedicalInstitutionForm);
     }
@@ -2471,7 +2698,14 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
     return data.medicalInstitutions.filter((institution) => {
       const matchesQuery =
         !normalized ||
-        [institution.name, institution.kana, institution.phone, institution.fax, institution.address]
+        [
+          institution.name,
+          institution.kana,
+          institution.phone,
+          institution.fax,
+          institution.address,
+          institution.homeVisitWeekday ? homeVisitWeekdayLabels[institution.homeVisitWeekday] : ""
+        ]
           .join(" ")
           .toLowerCase()
           .includes(normalized);
@@ -2587,7 +2821,7 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
                   type="button"
                   onClick={() => setEditingId(institution.id)}
                   className={[
-                    "grid w-full gap-3 px-4 py-4 text-left hover:bg-slate-50 md:grid-cols-[1fr_120px_130px_130px_110px_100px]",
+                    "grid w-full gap-3 px-4 py-4 text-left hover:bg-slate-50 md:grid-cols-[1fr_110px_110px_130px_130px_100px_90px]",
                     editingId === institution.id ? "bg-care-50" : "bg-white"
                   ].join(" ")}
                 >
@@ -2596,6 +2830,9 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
                     <span className="text-sm text-slate-600">{institution.kana}</span>
                   </span>
                   <span className="self-center font-semibold">{medicalInstitutionTypeLabels[institution.type]}</span>
+                  <span className="self-center font-semibold">
+                    {institution.homeVisitWeekday ? homeVisitWeekdayLabels[institution.homeVisitWeekday] : "-"}
+                  </span>
                   <span className="self-center">{institution.phone || "-"}</span>
                   <span className="self-center">{institution.fax || "-"}</span>
                   <span className="self-center">
@@ -2624,6 +2861,21 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
               onChange={(event) => updateForm("type", event.target.value as MedicalInstitutionType)}
             >
               {Object.entries(medicalInstitutionTypeLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-1">
+            <span className="font-semibold text-slate-700">往診曜日</span>
+            <select
+              className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+              value={form.homeVisitWeekday}
+              onChange={(event) => updateForm("homeVisitWeekday", event.target.value as HomeVisitWeekday | "")}
+            >
+              <option value="">未設定</option>
+              {Object.entries(homeVisitWeekdayLabels).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
                 </option>
@@ -2678,7 +2930,13 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
   const { id } = useParams();
   const navigate = useNavigate();
   const patient = data.patients.find((item) => item.id === id);
+  const [activePackageTab, setActivePackageTab] = useState<"items" | "cutoffs" | "photos">("items");
   const [selectedTiming, setSelectedTiming] = useState<MedicationTiming>("morning");
+  const packagePhotos = patient
+    ? data.medicationPackagePhotos
+        .filter((photo) => photo.patientId === patient.id)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    : [];
   const pattern = patient
     ? data.medicationPackagePatterns.find(
         (item) => item.patientId === patient.id && item.timing === selectedTiming
@@ -2693,6 +2951,10 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
     : [];
   const linkedInstitutions = patient ? getPatientMedicalInstitutions(patient, data.medicalInstitutions) : [];
   const packageInstitutionOptions = linkedInstitutions.length ? linkedInstitutions : data.medicalInstitutions;
+  const cutoffInstitutions = packageInstitutionOptions;
+  const patientCutoffs = patient
+    ? data.medicationClinicCutoffs.filter((cutoff) => cutoff.patientId === patient.id)
+    : [];
   const [draft, setDraft] = useState<Omit<MedicationPackageItem, "id" | "patternId" | "order" | "createdAt" | "updatedAt">>({
     dosageForm: "tablet",
     quantity: "",
@@ -2774,6 +3036,61 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
     await reload();
   };
 
+  const addPackagePhotos = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!patient || !event.target.files?.length) return;
+    const files = Array.from(event.target.files).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    const timestamp = nowString();
+    const photos = await Promise.all(
+      files.map(async (file) => ({
+        id: createId(),
+        patientId: patient.id,
+        imageDataUrl: await fileToDataUrl(file),
+        memo: "",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }))
+    );
+    await db.medicationPackagePhotos.bulkAdd(photos);
+    event.target.value = "";
+    await reload();
+  };
+
+  const updatePackagePhoto = async (photo: MedicationPackagePhoto, patch: Partial<MedicationPackagePhoto>) => {
+    await db.medicationPackagePhotos.update(photo.id, { ...patch, updatedAt: nowString() });
+    await reload();
+  };
+
+  const deletePackagePhoto = async (photo: MedicationPackagePhoto) => {
+    const ok = window.confirm("この写真を削除します。");
+    if (!ok) return;
+    await db.medicationPackagePhotos.delete(photo.id);
+    await reload();
+  };
+
+  const saveClinicCutoff = async (
+    institution: MedicalInstitution,
+    values: { previousCutoffDate: string; prescriptionDays: number; memo: string }
+  ) => {
+    if (!patient) return;
+    const timestamp = nowString();
+    const existing = patientCutoffs.find((cutoff) => cutoff.medicalInstitutionId === institution.id);
+    const nextCutoffDate = calcNextCutoffDate(values.previousCutoffDate, values.prescriptionDays);
+    const cutoff: MedicationClinicCutoff = {
+      id: existing?.id || createId(),
+      patientId: patient.id,
+      medicalInstitutionId: institution.id,
+      previousCutoffDate: values.previousCutoffDate,
+      prescriptionDays: Number(values.prescriptionDays) || 0,
+      nextCutoffDate,
+      memo: values.memo,
+      createdAt: existing?.createdAt || timestamp,
+      updatedAt: timestamp
+    };
+    await db.medicationClinicCutoffs.put(cutoff);
+    await reload();
+  };
+
   if (!patient) {
     return (
       <section className="rounded-md border border-slate-200 bg-white p-5">
@@ -2801,6 +3118,27 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
       </section>
 
       <section className="rounded-md border border-slate-200 bg-white">
+        <div className="flex gap-2 overflow-x-auto border-b border-slate-100 p-3">
+          {[
+            { id: "items", label: "一包化内容" },
+            { id: "cutoffs", label: "切日" },
+            { id: "photos", label: `写真 ${packagePhotos.length}` }
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActivePackageTab(tab.id as "items" | "cutoffs" | "photos")}
+              className={[
+                "touch-target shrink-0 rounded-md px-4 py-2 font-semibold",
+                activePackageTab === tab.id ? "bg-care-700 text-white" : "bg-slate-100 text-slate-700"
+              ].join(" ")}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        {activePackageTab === "items" ? (
+        <>
         <div className="flex gap-2 overflow-x-auto border-b border-slate-100 p-3">
           {medicationEditableTimings.map((timing) => (
             <button
@@ -2972,7 +3310,199 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
             </section>
           </aside>
         </div>
+        </>
+        ) : activePackageTab === "cutoffs" ? (
+          <ClinicCutoffPanel
+            institutions={cutoffInstitutions}
+            cutoffs={patientCutoffs}
+            onSave={saveClinicCutoff}
+          />
+        ) : (
+          <PackagePhotoPanel
+            photos={packagePhotos}
+            onAddPhotos={addPackagePhotos}
+            onUpdatePhoto={updatePackagePhoto}
+            onDeletePhoto={deletePackagePhoto}
+          />
+        )}
       </section>
+    </div>
+  );
+}
+
+function ClinicCutoffPanel({
+  institutions,
+  cutoffs,
+  onSave
+}: {
+  institutions: MedicalInstitution[];
+  cutoffs: MedicationClinicCutoff[];
+  onSave: (
+    institution: MedicalInstitution,
+    values: { previousCutoffDate: string; prescriptionDays: number; memo: string }
+  ) => Promise<void>;
+}) {
+  const cutoffSummary = getCutoffSummary(cutoffs);
+
+  return (
+    <div className="space-y-4 p-4">
+      <section className="rounded-md border border-slate-200 bg-slate-50 p-4">
+        <h2 className="text-xl font-bold">切日管理</h2>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div className="rounded-md border border-slate-200 bg-white p-3">
+            <p className="font-semibold text-slate-700">最短切日</p>
+            <p className="mt-2 text-2xl font-bold">
+              {cutoffSummary.shortestCutoffDate ? formatDateLabel(cutoffSummary.shortestCutoffDate) : "未設定"}
+            </p>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-white p-3">
+            <p className="font-semibold text-slate-700">設置期間</p>
+            <p className="mt-2 text-2xl font-bold">{cutoffSummary.installationPeriod || "未設定"}</p>
+          </div>
+        </div>
+      </section>
+
+      {institutions.length ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          {institutions.map((institution) => (
+            <ClinicCutoffEditor
+              key={institution.id}
+              institution={institution}
+              cutoff={cutoffs.find((item) => item.medicalInstitutionId === institution.id)}
+              onSave={onSave}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-md bg-slate-100 p-5 text-slate-600">患者情報に医療機関を登録してください</p>
+      )}
+    </div>
+  );
+}
+
+function ClinicCutoffEditor({
+  institution,
+  cutoff,
+  onSave
+}: {
+  institution: MedicalInstitution;
+  cutoff?: MedicationClinicCutoff;
+  onSave: (
+    institution: MedicalInstitution,
+    values: { previousCutoffDate: string; prescriptionDays: number; memo: string }
+  ) => Promise<void>;
+}) {
+  const [previousCutoffDate, setPreviousCutoffDate] = useState(cutoff?.previousCutoffDate || "");
+  const [prescriptionDays, setPrescriptionDays] = useState(cutoff?.prescriptionDays || 0);
+  const [memo, setMemo] = useState(cutoff?.memo || "");
+  const nextCutoffDate = calcNextCutoffDate(previousCutoffDate, Number(prescriptionDays) || 0);
+
+  useEffect(() => {
+    setPreviousCutoffDate(cutoff?.previousCutoffDate || "");
+    setPrescriptionDays(cutoff?.prescriptionDays || 0);
+    setMemo(cutoff?.memo || "");
+  }, [cutoff]);
+
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-4">
+      <h3 className="text-xl font-bold">{institution.name}</h3>
+      <div className="mt-3 grid gap-3">
+        <DateInput label="前回切日" value={previousCutoffDate} onChange={setPreviousCutoffDate} />
+        <TextInput
+          label="処方日数"
+          type="number"
+          value={prescriptionDays ? String(prescriptionDays) : ""}
+          onChange={(value) => setPrescriptionDays(Number(value) || 0)}
+        />
+        <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+          <p className="font-semibold text-slate-700">次回切日</p>
+          <p className="mt-2 text-2xl font-bold">
+            {nextCutoffDate ? formatDateLabel(nextCutoffDate) : "前回切日と処方日数を入力"}
+          </p>
+        </div>
+        <label className="grid gap-1">
+          <span className="font-semibold text-slate-700">メモ</span>
+          <textarea
+            className="min-h-20 rounded-md border border-slate-300 px-3 py-3"
+            value={memo}
+            onChange={(event) => setMemo(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => void onSave(institution, { previousCutoffDate, prescriptionDays, memo })}
+          className="touch-target rounded-md bg-care-700 px-5 py-3 font-semibold text-white"
+        >
+          切日を保存
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function PackagePhotoPanel({
+  photos,
+  onAddPhotos,
+  onUpdatePhoto,
+  onDeletePhoto
+}: {
+  photos: MedicationPackagePhoto[];
+  onAddPhotos: (event: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
+  onUpdatePhoto: (photo: MedicationPackagePhoto, patch: Partial<MedicationPackagePhoto>) => Promise<void>;
+  onDeletePhoto: (photo: MedicationPackagePhoto) => Promise<void>;
+}) {
+  return (
+    <div className="space-y-4 p-4">
+      <div className="rounded-md border border-care-100 bg-care-50 p-4">
+        <h2 className="text-xl font-bold text-care-950">撮影写真</h2>
+        <label className="mt-3 inline-flex touch-target cursor-pointer items-center justify-center rounded-md bg-care-700 px-5 py-3 font-semibold text-white">
+          写真を撮影・追加
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            multiple
+            className="sr-only"
+            onChange={(event) => void onAddPhotos(event)}
+          />
+        </label>
+      </div>
+
+      {photos.length ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          {photos.map((photo) => (
+            <article key={photo.id} className="overflow-hidden rounded-md border border-slate-200 bg-white">
+              <img
+                src={photo.imageDataUrl}
+                alt="一包化確認写真"
+                className="max-h-[520px] w-full bg-slate-100 object-contain"
+              />
+              <div className="grid gap-3 p-4">
+                <p className="text-sm font-semibold text-slate-600">
+                  追加日時 {formatDateLabel(photo.createdAt.slice(0, 10))}
+                </p>
+                <label className="grid gap-1">
+                  <span className="font-semibold text-slate-700">写真メモ</span>
+                  <textarea
+                    className="min-h-20 rounded-md border border-slate-300 px-3 py-3"
+                    value={photo.memo}
+                    onChange={(event) => void onUpdatePhoto(photo, { memo: event.target.value })}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void onDeletePhoto(photo)}
+                  className="touch-target rounded-md bg-rose-600 px-4 py-2 font-semibold text-white"
+                >
+                  写真を削除
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-md bg-slate-100 p-5 text-slate-600">写真はまだありません</p>
+      )}
     </div>
   );
 }
@@ -3067,6 +3597,7 @@ function TextInput({
         type={type}
         className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
         value={value}
+        onInput={(event) => onChange(event.currentTarget.value)}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
@@ -3346,6 +3877,78 @@ function getMedicalInstitutionPatientCount(institutionId: string, patients: Pati
   ).length;
 }
 
+function calcNextCutoffDate(previousCutoffDate: string, prescriptionDays: number) {
+  if (!previousCutoffDate || !prescriptionDays) return "";
+  return format(addDays(parseISO(previousCutoffDate), prescriptionDays), "yyyy-MM-dd");
+}
+
+function getCutoffSummary(cutoffs: MedicationClinicCutoff[]) {
+  const nextDates = cutoffs
+    .map((cutoff) => cutoff.nextCutoffDate)
+    .filter(Boolean)
+    .sort();
+  const shortestCutoffDate = nextDates[0] || "";
+  const installationStartDate = calcNextWeekdayDate(todayString(), 4);
+  const installationPeriod = shortestCutoffDate
+    ? `${formatDateLabel(installationStartDate)}〜${formatDateLabel(shortestCutoffDate)}`
+    : "";
+  return { shortestCutoffDate, installationStartDate, installationPeriod };
+}
+
+function calcNextWeekdayDate(fromDate: string, targetWeekday: number) {
+  let candidate = parseISO(fromDate);
+  for (let offset = 0; offset < 7; offset += 1) {
+    if (candidate.getDay() === targetWeekday) {
+      return format(candidate, "yyyy-MM-dd");
+    }
+    candidate = addDays(candidate, 1);
+  }
+  return fromDate;
+}
+
+function getRegisteredLocationOptions(patients: Patient[]) {
+  const options = new Set<string>(["個人宅"]);
+
+  patients.forEach((patient) => {
+    const facilityName = patient.facilityName.trim();
+    if (facilityName) {
+      options.add(facilityName);
+    }
+  });
+
+  return [...options].sort((a, b) => {
+    if (a === "個人宅") return -1;
+    if (b === "個人宅") return 1;
+    return a.localeCompare(b, "ja");
+  });
+}
+
+function calcNextHomeVisitDate(lastVisitDate: string, prescriptionDays: number, weekday: HomeVisitWeekday | "") {
+  if (!lastVisitDate || !prescriptionDays || !weekday) return "";
+  const targetWeekday = getWeekdayNumber(weekday);
+  let candidate = addDays(parseISO(lastVisitDate), prescriptionDays);
+  for (let offset = 0; offset < 7; offset += 1) {
+    if (candidate.getDay() === targetWeekday) {
+      return format(candidate, "yyyy-MM-dd");
+    }
+    candidate = addDays(candidate, 1);
+  }
+  return "";
+}
+
+function getWeekdayNumber(weekday: HomeVisitWeekday) {
+  const weekdayNumbers: Record<HomeVisitWeekday, number> = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6
+  };
+  return weekdayNumbers[weekday];
+}
+
 async function deletePatientCascade(patientId: string) {
   const calendars = await db.medicationCalendars.where("patientId").equals(patientId).toArray();
   const calendarIds = calendars.map((calendar) => calendar.id);
@@ -3367,7 +3970,9 @@ async function deletePatientCascade(patientId: string) {
       db.medicationCalendarDays,
       db.medicationCalendarAudits,
       db.medicationPackagePatterns,
-      db.medicationPackageItems
+      db.medicationPackageItems,
+      db.medicationPackagePhotos,
+      db.medicationClinicCutoffs
     ],
     async () => {
       await Promise.all([
@@ -3385,18 +3990,34 @@ async function deletePatientCascade(patientId: string) {
         db.medicationPackagePatterns.where("patientId").equals(patientId).delete(),
         packagePatternIds.length
           ? db.medicationPackageItems.where("patternId").anyOf(packagePatternIds).delete()
-          : Promise.resolve(0)
+          : Promise.resolve(0),
+        db.medicationPackagePhotos.where("patientId").equals(patientId).delete(),
+        db.medicationClinicCutoffs.where("patientId").equals(patientId).delete()
       ]);
     }
   );
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 function toPatientForm(patient: Patient): PatientFormValues {
   const { id, order, createdAt, updatedAt, ...form } = patient;
   return {
     ...form,
+    facilityName: patient.facilityName || (patient.locationType === "home" ? "個人宅" : ""),
     mainMedicalInstitutionId: patient.mainMedicalInstitutionId || "",
-    additionalMedicalInstitutionIds: patient.additionalMedicalInstitutionIds || []
+    additionalMedicalInstitutionIds: patient.additionalMedicalInstitutionIds || [],
+    lastVisitDate: patient.lastVisitDate || "",
+    prescriptionDays: patient.prescriptionDays || 0,
+    nextVisitDate: patient.nextVisitDate || "",
+    isNextVisitDateManual: Boolean(patient.isNextVisitDateManual)
   };
 }
 

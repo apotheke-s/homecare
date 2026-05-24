@@ -2,6 +2,15 @@ export type LocationType = "home" | "facility";
 
 export type MedicalInstitutionType = "clinic" | "hospital" | "dental" | "other";
 
+export type HomeVisitWeekday =
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
+
 export type TaskType =
   | "delivery"
   | "visit"
@@ -18,6 +27,10 @@ export interface Patient {
   facilityCalendarSlot?: number;
   mainMedicalInstitutionId?: string;
   additionalMedicalInstitutionIds?: string[];
+  lastVisitDate?: string;
+  prescriptionDays?: number;
+  nextVisitDate?: string;
+  isNextVisitDateManual?: boolean;
   name: string;
   kana: string;
   birthday: string;
@@ -45,6 +58,7 @@ export interface MedicalInstitution {
   phone: string;
   fax: string;
   address: string;
+  homeVisitWeekday: HomeVisitWeekday | "";
   memo: string;
   isMainHomeCareClinic: boolean;
   createdAt: string;
@@ -179,6 +193,27 @@ export interface MedicationPackageItem {
   isTemporary: boolean;
   isStopped: boolean;
   isSelfAdjustment: boolean;
+  memo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MedicationPackagePhoto {
+  id: string;
+  patientId: string;
+  imageDataUrl: string;
+  memo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MedicationClinicCutoff {
+  id: string;
+  patientId: string;
+  medicalInstitutionId: string;
+  previousCutoffDate: string;
+  prescriptionDays: number;
+  nextCutoffDate: string;
   memo: string;
   createdAt: string;
   updatedAt: string;
