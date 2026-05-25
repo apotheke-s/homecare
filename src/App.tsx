@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   closestCenter,
   DndContext,
@@ -111,6 +111,30 @@ const medicationTimingLabels: Record<MedicationTiming, string> = {
 };
 
 const medicationCoreTimings: MedicationTiming[] = ["morning", "noon", "evening", "bedtime"];
+const medicationLineLabelColors: Partial<Record<MedicationTiming, string>> = {
+  morning: "text-rose-700",
+  noon: "text-yellow-600",
+  evening: "text-blue-700",
+  bedtime: "text-purple-700"
+};
+const medicationTimingTabClasses: Partial<Record<MedicationTiming, { active: string; inactive: string }>> = {
+  morning: {
+    active: "border-rose-700 bg-rose-700 text-white",
+    inactive: "border-rose-200 bg-rose-50 text-rose-700"
+  },
+  noon: {
+    active: "border-yellow-500 bg-yellow-400 text-slate-950",
+    inactive: "border-yellow-200 bg-yellow-50 text-yellow-700"
+  },
+  evening: {
+    active: "border-blue-700 bg-blue-700 text-white",
+    inactive: "border-blue-200 bg-blue-50 text-blue-700"
+  },
+  bedtime: {
+    active: "border-purple-700 bg-purple-700 text-white",
+    inactive: "border-purple-200 bg-purple-50 text-purple-700"
+  }
+};
 const medicationEditableTimings: MedicationTiming[] = [
   "morning",
   "noon",
@@ -125,11 +149,20 @@ const medicationEditableTimings: MedicationTiming[] = [
 const dosageFormLabels: Record<DosageForm, string> = {
   tablet: "錠",
   powder: "粉",
-  magnesium: "Mg",
+  magnesium: "カマグ",
+  aspark: "アスK",
   patch: "貼付",
   kampo: "漢方",
   other: "その他"
 };
+
+const packageFlagLabels = {
+  isAdded: "追加",
+  isChanged: "変更",
+  isTemporary: "臨時"
+} as const;
+
+type PackageFlagKey = keyof typeof packageFlagLabels;
 
 const medicationAuditChecks: Array<[keyof MedicationCalendarAudit, string]> = [
   ["dateChecked", "日付が正しい"],
@@ -462,7 +495,7 @@ function App() {
                 element={<MedicationAuditPage data={data} reload={reload} />}
               />
               <Route path="/facility-r-calendar" element={<FacilityRCalendarPage data={data} reload={reload} />} />
-              <Route path="/settings" element={<SettingsPage data={data} />} />
+              <Route path="/settings" element={<SettingsPage data={data} reload={reload} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           )}
@@ -987,6 +1020,23 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
   );
 
   const slots = getFacilityCalendarSlots(facilityPatients);
+  const institutionSummaries = useMemo(
+    () =>
+      getFacilityRInstitutionSummaries({
+        patients: facilityPatients,
+        institutions: data.medicalInstitutions,
+        cutoffs: data.medicationClinicCutoffs,
+        packagePatterns: data.medicationPackagePatterns,
+        packageItems: data.medicationPackageItems
+      }),
+    [
+      facilityPatients,
+      data.medicalInstitutions,
+      data.medicationClinicCutoffs,
+      data.medicationPackagePatterns,
+      data.medicationPackageItems
+    ]
+  );
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -1052,6 +1102,12 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
         {seedMessage ? <p className="mt-3 font-semibold text-care-900">{seedMessage}</p> : null}
       </section>
 
+      <section className="grid gap-3 lg:grid-cols-2">
+        {institutionSummaries.map((summary) => (
+          <FacilityRInstitutionSummaryCard key={summary.key} summary={summary} />
+        ))}
+      </section>
+
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleDragEnd(event)}>
         <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
           {slots.map(({ slotNumber, patient }) => (
@@ -1066,6 +1122,74 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
         </section>
       </DndContext>
     </div>
+  );
+}
+
+type FacilityRInstitutionSummary = {
+  key: string;
+  label: string;
+  weekdayLabel: string;
+  patientCount: number;
+  shortestCutoffDate: string;
+  earliestNextVisitDate: string;
+  rows: Array<{
+    patient: Patient;
+    cutoffDate: string;
+    nextVisitDate: string;
+    relation: "居宅" | "外来" | "一包化";
+  }>;
+};
+
+function FacilityRInstitutionSummaryCard({ summary }: { summary: FacilityRInstitutionSummary }) {
+  return (
+    <article className="rounded-md border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold">{summary.label}</h2>
+          <p className="mt-1 text-sm font-semibold text-slate-600">
+            往診曜日：{summary.weekdayLabel || "未設定"}
+          </p>
+        </div>
+        <Badge tone="slate">対象 {summary.patientCount}名</Badge>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <div className="rounded-md bg-rose-50 p-3">
+          <p className="text-sm font-semibold text-rose-700">最短切日</p>
+          <p className="mt-1 text-lg font-bold text-rose-900">
+            {summary.shortestCutoffDate ? formatDateLabel(summary.shortestCutoffDate) : "未設定"}
+          </p>
+        </div>
+        <div className="rounded-md bg-blue-50 p-3">
+          <p className="text-sm font-semibold text-blue-700">次回往診日</p>
+          <p className="mt-1 text-lg font-bold text-blue-900">
+            {summary.earliestNextVisitDate ? formatDateLabel(summary.earliestNextVisitDate) : "未設定"}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-3 max-h-56 space-y-2 overflow-auto pr-1">
+        {summary.rows.length ? (
+          summary.rows.map((row) => (
+            <div
+              key={row.patient.id}
+              className="grid gap-2 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-sm md:grid-cols-[1fr_auto_auto_auto]"
+            >
+              <span className="font-bold text-slate-900">{row.patient.name}</span>
+              <span className="font-semibold text-slate-600">{row.relation}</span>
+              <span className="text-slate-700">
+                切日：{row.cutoffDate ? formatDateLabel(row.cutoffDate) : "未設定"}
+              </span>
+              <span className="text-slate-700">
+                往診：{row.nextVisitDate ? formatDateLabel(row.nextVisitDate) : "未設定"}
+              </span>
+            </div>
+          ))
+        ) : (
+          <p className="rounded-md bg-slate-50 p-3 text-sm font-semibold text-slate-500">対象患者はいません</p>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -1398,9 +1522,10 @@ function MedicationLine({
   labelOverride?: string;
   showPackageCount?: boolean;
 }) {
+  const hasItems = items.length > 0;
   return (
-    <p className={items.length ? "text-slate-900" : "rounded-md bg-slate-100 px-2 py-1 italic text-slate-500"}>
-      <span className="font-bold">
+    <p className={hasItems ? "text-slate-900" : "rounded-md bg-slate-50 px-2 py-1 italic text-slate-400"}>
+      <span className={`font-bold ${hasItems ? medicationLineLabelColors[timing] || "text-slate-700" : "text-slate-400"}`}>
         {labelOverride || medicationTimingLabels[timing]}
         {showPackageCount ? `（${items.length}）` : ""}：
       </span>
@@ -1770,7 +1895,6 @@ function PatientDetail({
                 className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
                 placeholder="所属先名"
                 value={form.facilityName}
-                onInput={(event) => updateLocationLabel(event.currentTarget.value)}
                 onChange={(event) => updateLocationLabel(event.target.value)}
               />
             ) : null}
@@ -2932,6 +3056,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
   const patient = data.patients.find((item) => item.id === id);
   const [activePackageTab, setActivePackageTab] = useState<"items" | "cutoffs" | "photos">("items");
   const [selectedTiming, setSelectedTiming] = useState<MedicationTiming>("morning");
+  const [savedItemId, setSavedItemId] = useState("");
   const packagePhotos = patient
     ? data.medicationPackagePhotos
         .filter((photo) => photo.patientId === patient.id)
@@ -2960,6 +3085,9 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
     quantity: "",
     medicineName: "",
     clinicName: "",
+    packageChangeType: "none" as const,
+    isAdded: false,
+    isChanged: false,
     isTemporary: false,
     isStopped: false,
     isSelfAdjustment: false,
@@ -3003,6 +3131,9 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
       quantity: "",
       medicineName: "",
       clinicName: "",
+      packageChangeType: "none",
+      isAdded: false,
+      isChanged: false,
       isTemporary: false,
       isStopped: false,
       isSelfAdjustment: false,
@@ -3020,6 +3151,10 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
     );
     await normalizePackageOrder(sortPackageItemsForPatient(patient, nextItems, data.medicalInstitutions));
     await reload();
+    setSavedItemId(item.id);
+    window.setTimeout(() => {
+      setSavedItemId((current) => (current === item.id ? "" : current));
+    }, 2400);
   };
 
   const deletePackageItem = async (item: MedicationPackageItem) => {
@@ -3140,27 +3275,48 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
         {activePackageTab === "items" ? (
         <>
         <div className="flex gap-2 overflow-x-auto border-b border-slate-100 p-3">
-          {medicationEditableTimings.map((timing) => (
-            <button
-              key={timing}
-              type="button"
-              onClick={() => setSelectedTiming(timing)}
-              className={[
-                "touch-target shrink-0 rounded-md px-4 py-2 font-semibold",
-                selectedTiming === timing ? "bg-care-700 text-white" : "bg-slate-100 text-slate-700"
-              ].join(" ")}
-            >
-              {medicationTimingLabels[timing]}
-            </button>
-          ))}
+          {medicationEditableTimings.map((timing) => {
+            const tabTone = medicationTimingTabClasses[timing];
+            return (
+              <button
+                key={timing}
+                type="button"
+                onClick={() => setSelectedTiming(timing)}
+                className={[
+                  "touch-target shrink-0 rounded-md border px-4 py-2 font-semibold",
+                  selectedTiming === timing
+                    ? tabTone?.active || "border-care-700 bg-care-700 text-white"
+                    : tabTone?.inactive || "border-slate-200 bg-slate-100 text-slate-700"
+                ].join(" ")}
+              >
+                {medicationTimingLabels[timing]}
+              </button>
+            );
+          })}
         </div>
 
         <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="space-y-3">
-            <h2 className="text-xl font-bold">{medicationTimingLabels[selectedTiming]}の内容</h2>
+            <h2 className={`text-xl font-bold ${medicationLineLabelColors[selectedTiming] || "text-slate-900"}`}>
+              {medicationTimingLabels[selectedTiming]}の内容
+            </h2>
             {patternItems.length ? (
               patternItems.map((item, index) => (
-                <article key={item.id} className="rounded-md border border-slate-200 bg-white p-4">
+                <article
+                  key={item.id}
+                  className={[
+                    "rounded-md border bg-white p-4 transition-colors",
+                    savedItemId === item.id ? "border-emerald-300 bg-emerald-50/60" : "border-slate-200"
+                  ].join(" ")}
+                >
+                  <div className="mb-3 flex min-h-7 flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold text-slate-700">薬剤 {index + 1}</p>
+                    {savedItemId === item.id ? (
+                      <span className="rounded-md bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-800">
+                        保存しました
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="grid gap-3 md:grid-cols-[140px_120px_1fr_1fr]">
                     <label className="grid gap-1">
                       <span className="font-semibold text-slate-700">剤形</span>
@@ -3178,15 +3334,15 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                         ))}
                       </select>
                     </label>
-                    <TextInput
+                    <DeferredTextInput
                       label="数量"
                       value={item.quantity}
-                      onChange={(value) => void updatePackageItem(item, { quantity: value })}
+                      onCommit={(value) => void updatePackageItem(item, { quantity: value })}
                     />
-                    <TextInput
+                    <DeferredTextInput
                       label="薬剤名"
                       value={item.medicineName}
-                      onChange={(value) => void updatePackageItem(item, { medicineName: value })}
+                      onCommit={(value) => void updatePackageItem(item, { medicineName: value })}
                     />
                     <MedicalInstitutionSelect
                       label="医療機関"
@@ -3195,28 +3351,18 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                       onChange={(value) => void updatePackageItem(item, { clinicName: value })}
                     />
                   </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-3">
-                    <Toggle
-                      label="臨時薬"
-                      checked={item.isTemporary}
-                      onChange={(value) => void updatePackageItem(item, { isTemporary: value })}
-                    />
-                    <Toggle
-                      label="中止薬"
-                      checked={item.isStopped}
-                      onChange={(value) => void updatePackageItem(item, { isStopped: value })}
-                    />
-                    <Toggle
-                      label="自己調節薬"
-                      checked={item.isSelfAdjustment}
-                      onChange={(value) => void updatePackageItem(item, { isSelfAdjustment: value })}
+                  <div className="mt-3">
+                    <PackageFlagCheckboxes
+                      label="区分"
+                      values={getPackageFlags(item)}
+                      onChange={(key, checked) => void updatePackageItem(item, getPackageFlagPatch(item, key, checked))}
                     />
                   </div>
                   <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
-                    <TextInput
+                    <DeferredTextInput
                       label="メモ"
                       value={item.memo}
-                      onChange={(value) => void updatePackageItem(item, { memo: value })}
+                      onCommit={(value) => void updatePackageItem(item, { memo: value })}
                     />
                     <button
                       type="button"
@@ -3277,9 +3423,13 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                   institutions={packageInstitutionOptions}
                   onChange={(value) => setDraft((current) => ({ ...current, clinicName: value }))}
                 />
-                <Toggle label="臨時薬" checked={draft.isTemporary} onChange={(value) => setDraft((current) => ({ ...current, isTemporary: value }))} />
-                <Toggle label="中止薬" checked={draft.isStopped} onChange={(value) => setDraft((current) => ({ ...current, isStopped: value }))} />
-                <Toggle label="自己調節薬" checked={draft.isSelfAdjustment} onChange={(value) => setDraft((current) => ({ ...current, isSelfAdjustment: value }))} />
+                <PackageFlagCheckboxes
+                  label="区分"
+                  values={getPackageFlags(draft)}
+                  onChange={(key, checked) =>
+                    setDraft((current) => ({ ...current, ...getPackageFlagPatch(current, key, checked) }))
+                  }
+                />
                 <TextInput label="メモ" value={draft.memo} onChange={(value) => setDraft((current) => ({ ...current, memo: value }))} />
                 <button
                   type="button"
@@ -3556,7 +3706,49 @@ function TasksPage({ data, reload }: { data: AppData; reload: () => Promise<void
   );
 }
 
-function SettingsPage({ data }: { data: AppData }) {
+function SettingsPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+  const [backupMessage, setBackupMessage] = useState("");
+
+  const exportData = () => {
+    const payload = {
+      appName: "在宅サポートノート",
+      exportedAt: nowString(),
+      version: 1,
+      data
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `homecare-backup-${todayString()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setBackupMessage("エクスポートしました");
+  };
+
+  const importData = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const ok = window.confirm("現在の端末内データを、選択したバックアップで置き換えます。実行しますか？");
+    if (!ok) return;
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Partial<{ data: Partial<AppData> }> & Partial<AppData>;
+      const backupData = normalizeBackupData(parsed);
+      await replaceAllAppData(backupData);
+      await reload();
+      setBackupMessage("インポートしました");
+    } catch (error) {
+      console.error(error);
+      setBackupMessage("インポートに失敗しました。JSONファイルを確認してください");
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className="rounded-md border border-slate-200 bg-white p-5">
@@ -3574,6 +3766,23 @@ function SettingsPage({ data }: { data: AppData }) {
           患者情報、訪問予定、配達予定、タスク、チェックシート、メモは端末内の IndexedDB
           に保存されます。初回読み込み後は Service Worker がアプリ本体をキャッシュします。
         </p>
+      </section>
+      <section className="rounded-md border border-slate-200 bg-white p-5">
+        <h2 className="text-xl font-bold">データのインポート / エクスポート</h2>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={exportData}
+            className="touch-target rounded-md bg-care-700 px-5 py-3 font-semibold text-white"
+          >
+            データをエクスポート
+          </button>
+          <label className="touch-target inline-flex cursor-pointer items-center rounded-md border border-slate-300 px-5 py-3 font-semibold">
+            データをインポート
+            <input type="file" accept="application/json,.json" className="sr-only" onChange={(event) => void importData(event)} />
+          </label>
+        </div>
+        {backupMessage ? <p className="mt-3 font-semibold text-care-900">{backupMessage}</p> : null}
       </section>
     </div>
   );
@@ -3597,10 +3806,73 @@ function TextInput({
         type={type}
         className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
         value={value}
-        onInput={(event) => onChange(event.currentTarget.value)}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
+  );
+}
+
+function DeferredTextInput({
+  label,
+  value,
+  onCommit,
+  type = "text"
+}: {
+  label: string;
+  value: string;
+  onCommit: (value: string) => void;
+  type?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const isDirty = draft !== value;
+  const inputId = useId();
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = () => {
+    if (draft !== value) {
+      onCommit(draft);
+    }
+  };
+
+  return (
+    <div className="grid gap-1">
+      <div className="flex min-h-7 items-center justify-between gap-2">
+        <label htmlFor={inputId} className="font-semibold text-slate-700">
+          {label}
+        </label>
+        {isDirty ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-amber-700">変更あり</span>
+            <button
+              type="button"
+              onClick={commit}
+              className="rounded-md bg-amber-100 px-3 py-1 text-sm font-semibold text-amber-800"
+            >
+              保存
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <input
+        id={inputId}
+        type={type}
+        className={[
+          "touch-target rounded-md border bg-white px-3 py-3",
+          isDirty ? "border-amber-400 ring-2 ring-amber-100" : "border-slate-300"
+        ].join(" ")}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    </div>
   );
 }
 
@@ -3637,6 +3909,32 @@ function MedicalInstitutionSelect({
         ))}
       </select>
     </label>
+  );
+}
+
+function PackageFlagCheckboxes({
+  label,
+  values,
+  onChange
+}: {
+  label: string;
+  values: Record<PackageFlagKey, boolean>;
+  onChange: (key: PackageFlagKey, checked: boolean) => void;
+}) {
+  return (
+    <div className="grid gap-1">
+      <span className="font-semibold text-slate-700">{label}</span>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {(Object.keys(packageFlagLabels) as PackageFlagKey[]).map((key) => (
+          <Toggle
+            key={key}
+            label={packageFlagLabels[key]}
+            checked={values[key]}
+            onChange={(checked) => onChange(key, checked)}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -3781,21 +4079,63 @@ function formatPackageItems(items: MedicationPackageItem[]) {
 }
 
 function formatPackageItem(item: MedicationPackageItem) {
-  const base =
-    item.dosageForm === "tablet"
-      ? `錠（${item.quantity || "0"}）`
+  const medicineName = item.medicineName.trim();
+  const quantityText = item.quantity || "0";
+  const base = medicineName
+    ? item.dosageForm === "powder" || item.dosageForm === "kampo" || item.dosageForm === "patch" || item.dosageForm === "other"
+      ? medicineName
+      : `${medicineName}（${quantityText}）`
+    : item.dosageForm === "tablet"
+      ? `錠（${quantityText}）`
       : item.dosageForm === "powder"
-        ? `粉（${item.quantity || "0"}）`
+        ? "粉"
         : item.dosageForm === "magnesium"
-          ? "Mg"
+          ? `カマグ（${quantityText}）`
+          : item.dosageForm === "aspark"
+            ? `アスK（${quantityText}）`
           : item.dosageForm === "kampo"
-            ? item.medicineName || "漢方"
+            ? "漢方"
             : item.dosageForm === "patch"
-              ? item.medicineName || "貼付"
-              : item.medicineName || "その他";
-  const temporary = item.isTemporary ? "【臨時】" : "";
-  const stopped = item.isStopped ? "【中止】" : "";
-  return `${base}${temporary}${stopped}`;
+              ? "貼付"
+              : "その他";
+  const flags = getPackageFlags(item);
+  const changeLabel = (Object.keys(packageFlagLabels) as PackageFlagKey[])
+    .filter((key) => flags[key])
+    .map((key) => `【${packageFlagLabels[key]}】`)
+    .join("");
+  return `${base}${changeLabel}`;
+}
+
+function getPackageFlags(item: Pick<
+  MedicationPackageItem,
+  "packageChangeType" | "isAdded" | "isChanged" | "isTemporary" | "isStopped"
+>): Record<PackageFlagKey, boolean> {
+  return {
+    isAdded: Boolean(item.isAdded || item.packageChangeType === "added"),
+    isChanged: Boolean(
+      item.isChanged ||
+        item.packageChangeType === "increased" ||
+        item.packageChangeType === "decreased" ||
+        item.isStopped
+    ),
+    isTemporary: Boolean(item.isTemporary || item.packageChangeType === "temporary")
+  };
+}
+
+function getPackageFlagPatch(
+  item: Pick<MedicationPackageItem, "packageChangeType" | "isAdded" | "isChanged" | "isTemporary" | "isStopped">,
+  key: PackageFlagKey,
+  checked: boolean
+): Pick<MedicationPackageItem, "packageChangeType" | "isAdded" | "isChanged" | "isTemporary" | "isStopped" | "isSelfAdjustment"> {
+  const flags = { ...getPackageFlags(item), [key]: checked };
+  return {
+    packageChangeType: "none",
+    isAdded: flags.isAdded,
+    isChanged: flags.isChanged,
+    isTemporary: flags.isTemporary,
+    isStopped: false,
+    isSelfAdjustment: false
+  };
 }
 
 function getPackageCount(
@@ -3809,7 +4149,9 @@ function getPackageCount(
 }
 
 function hasTemporaryItem(items: Record<MedicationTiming, MedicationPackageItem[]>) {
-  return Object.values(items).some((timingItems) => timingItems.some((item) => item.isTemporary));
+  return Object.values(items).some((timingItems) =>
+    timingItems.some((item) => getPackageFlags(item).isTemporary)
+  );
 }
 
 async function normalizePackageOrder(items: MedicationPackageItem[]) {
@@ -3852,9 +4194,10 @@ function getDosageFormRank(dosageForm: DosageForm) {
     tablet: 0,
     powder: 1,
     magnesium: 2,
-    patch: 3,
-    kampo: 4,
-    other: 5
+    aspark: 3,
+    patch: 4,
+    kampo: 5,
+    other: 6
   };
   return ranks[dosageForm];
 }
@@ -3893,6 +4236,82 @@ function getCutoffSummary(cutoffs: MedicationClinicCutoff[]) {
     ? `${formatDateLabel(installationStartDate)}〜${formatDateLabel(shortestCutoffDate)}`
     : "";
   return { shortestCutoffDate, installationStartDate, installationPeriod };
+}
+
+function getFacilityRInstitutionSummaries({
+  patients,
+  institutions,
+  cutoffs,
+  packagePatterns,
+  packageItems
+}: {
+  patients: Patient[];
+  institutions: MedicalInstitution[];
+  cutoffs: MedicationClinicCutoff[];
+  packagePatterns: MedicationPackagePattern[];
+  packageItems: MedicationPackageItem[];
+}): FacilityRInstitutionSummary[] {
+  const targets = [
+    { key: "tadaoka", label: "ただおかメディカル", match: "ただおかメディカル" },
+    { key: "nakayama", label: "なかやまメンタル", match: "なかやまメンタル" }
+  ];
+
+  return targets.map((target) => {
+    const institution = institutions.find((item) => item.name.includes(target.match));
+    const rows = institution
+      ? patients
+          .map((patient) => {
+            const patientCutoff = cutoffs.find(
+              (cutoff) => cutoff.patientId === patient.id && cutoff.medicalInstitutionId === institution.id
+            );
+            const relation = getPatientInstitutionRelation(patient, institution, patientCutoff, packagePatterns, packageItems);
+            if (!relation) return undefined;
+            return {
+              patient,
+              cutoffDate: patientCutoff?.nextCutoffDate || "",
+              nextVisitDate: patient.mainMedicalInstitutionId === institution.id ? patient.nextVisitDate || "" : "",
+              relation
+            };
+          })
+          .filter((row): row is FacilityRInstitutionSummary["rows"][number] => Boolean(row))
+          .sort((a, b) => {
+            const dateDiff = (a.cutoffDate || "9999-12-31").localeCompare(b.cutoffDate || "9999-12-31");
+            if (dateDiff !== 0) return dateDiff;
+            return a.patient.kana.localeCompare(b.patient.kana, "ja");
+          })
+      : [];
+    const cutoffDates = rows.map((row) => row.cutoffDate).filter(Boolean).sort();
+    const nextVisitDates = rows.map((row) => row.nextVisitDate).filter(Boolean).sort();
+
+    return {
+      key: target.key,
+      label: institution?.name || target.label,
+      weekdayLabel: institution?.homeVisitWeekday ? homeVisitWeekdayLabels[institution.homeVisitWeekday] : "",
+      patientCount: rows.length,
+      shortestCutoffDate: cutoffDates[0] || "",
+      earliestNextVisitDate: nextVisitDates[0] || "",
+      rows
+    };
+  });
+}
+
+function getPatientInstitutionRelation(
+  patient: Patient,
+  institution: MedicalInstitution,
+  cutoff: MedicationClinicCutoff | undefined,
+  packagePatterns: MedicationPackagePattern[],
+  packageItems: MedicationPackageItem[]
+): "居宅" | "外来" | "一包化" | "" {
+  if (patient.mainMedicalInstitutionId === institution.id) return "居宅";
+  if ((patient.additionalMedicalInstitutionIds || []).includes(institution.id)) return "外来";
+  if (cutoff) return "外来";
+  const patternIds = packagePatterns
+    .filter((pattern) => pattern.patientId === patient.id)
+    .map((pattern) => pattern.id);
+  if (!patternIds.length) return "";
+  return packageItems.some((item) => patternIds.includes(item.patternId) && item.clinicName === institution.name)
+    ? "一包化"
+    : "";
 }
 
 function calcNextWeekdayDate(fromDate: string, targetWeekday: number) {
@@ -3947,6 +4366,78 @@ function getWeekdayNumber(weekday: HomeVisitWeekday) {
     saturday: 6
   };
   return weekdayNumbers[weekday];
+}
+
+function normalizeBackupData(parsed: Partial<{ data: Partial<AppData> }> & Partial<AppData>): AppData {
+  const source = parsed.data || parsed;
+  if (!Array.isArray(source.patients)) {
+    throw new Error("Invalid backup: patients is missing");
+  }
+
+  return {
+    patients: source.patients || [],
+    visits: source.visits || [],
+    tasks: source.tasks || [],
+    checklists: source.checklists || [],
+    medicationCalendars: source.medicationCalendars || [],
+    medicationCalendarDays: source.medicationCalendarDays || [],
+    medicationCalendarAudits: source.medicationCalendarAudits || [],
+    medicationPackagePatterns: source.medicationPackagePatterns || [],
+    medicationPackageItems: source.medicationPackageItems || [],
+    medicationPackagePhotos: source.medicationPackagePhotos || [],
+    medicationClinicCutoffs: source.medicationClinicCutoffs || [],
+    medicalInstitutions: source.medicalInstitutions || []
+  };
+}
+
+async function replaceAllAppData(data: AppData) {
+  await db.transaction(
+    "rw",
+    [
+      db.patients,
+      db.visits,
+      db.tasks,
+      db.checklists,
+      db.medicationCalendars,
+      db.medicationCalendarDays,
+      db.medicationCalendarAudits,
+      db.medicationPackagePatterns,
+      db.medicationPackageItems,
+      db.medicationPackagePhotos,
+      db.medicationClinicCutoffs,
+      db.medicalInstitutions
+    ],
+    async () => {
+      await Promise.all([
+        db.patients.clear(),
+        db.visits.clear(),
+        db.tasks.clear(),
+        db.checklists.clear(),
+        db.medicationCalendars.clear(),
+        db.medicationCalendarDays.clear(),
+        db.medicationCalendarAudits.clear(),
+        db.medicationPackagePatterns.clear(),
+        db.medicationPackageItems.clear(),
+        db.medicationPackagePhotos.clear(),
+        db.medicationClinicCutoffs.clear(),
+        db.medicalInstitutions.clear()
+      ]);
+      await Promise.all([
+        data.patients.length ? db.patients.bulkPut(data.patients) : Promise.resolve(),
+        data.visits.length ? db.visits.bulkPut(data.visits) : Promise.resolve(),
+        data.tasks.length ? db.tasks.bulkPut(data.tasks) : Promise.resolve(),
+        data.checklists.length ? db.checklists.bulkPut(data.checklists) : Promise.resolve(),
+        data.medicationCalendars.length ? db.medicationCalendars.bulkPut(data.medicationCalendars) : Promise.resolve(),
+        data.medicationCalendarDays.length ? db.medicationCalendarDays.bulkPut(data.medicationCalendarDays) : Promise.resolve(),
+        data.medicationCalendarAudits.length ? db.medicationCalendarAudits.bulkPut(data.medicationCalendarAudits) : Promise.resolve(),
+        data.medicationPackagePatterns.length ? db.medicationPackagePatterns.bulkPut(data.medicationPackagePatterns) : Promise.resolve(),
+        data.medicationPackageItems.length ? db.medicationPackageItems.bulkPut(data.medicationPackageItems) : Promise.resolve(),
+        data.medicationPackagePhotos.length ? db.medicationPackagePhotos.bulkPut(data.medicationPackagePhotos) : Promise.resolve(),
+        data.medicationClinicCutoffs.length ? db.medicationClinicCutoffs.bulkPut(data.medicationClinicCutoffs) : Promise.resolve(),
+        data.medicalInstitutions.length ? db.medicalInstitutions.bulkPut(data.medicalInstitutions) : Promise.resolve()
+      ]);
+    }
+  );
 }
 
 async function deletePatientCascade(patientId: string) {

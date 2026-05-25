@@ -124,7 +124,8 @@ export type MedicationTiming =
   | "external"
   | "other";
 
-export type DosageForm = "tablet" | "powder" | "magnesium" | "patch" | "kampo" | "other";
+export type DosageForm = "tablet" | "powder" | "magnesium" | "aspark" | "patch" | "kampo" | "other";
+export type MedicationPackageChangeType = "none" | "added" | "increased" | "decreased" | "temporary";
 
 export interface MedicationCalendar {
   id: string;
@@ -190,6 +191,9 @@ export interface MedicationPackageItem {
   quantity: string;
   medicineName: string;
   clinicName: string;
+  packageChangeType?: MedicationPackageChangeType;
+  isAdded?: boolean;
+  isChanged?: boolean;
   isTemporary: boolean;
   isStopped: boolean;
   isSelfAdjustment: boolean;
