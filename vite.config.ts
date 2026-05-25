@@ -2,8 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
+const base = "/homecare/";
+
 export default defineConfig({
-  base: "/homecare/",
+  base,
   plugins: [
     react(),
     VitePWA({
@@ -21,8 +23,9 @@ export default defineConfig({
         short_name: "在宅ノート",
         description: "在宅患者対応業務をオフラインで管理するiPad向けPWA",
         display: "standalone",
-        start_url: "./",
-        scope: "./",
+        start_url: base,
+        scope: base,
+        lang: "ja",
         theme_color: "#0f766e",
         background_color: "#f8fafc",
         icons: [
@@ -46,7 +49,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,json,webmanifest}"],
-        navigateFallback: "index.html",
+        navigateFallback: `${base}index.html`,
         cleanupOutdatedCaches: true
       },
       devOptions: {
