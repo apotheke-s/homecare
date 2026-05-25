@@ -2,6 +2,14 @@
 
 iPad Safari のホーム画面追加を想定した、完全オフライン対応の在宅患者管理PWAです。
 
+## iPad Safari で開くURL
+
+GitHub Pages 公開後は、iPad の Safari で以下を開きます。
+
+https://apotheke-s.github.io/homecare/
+
+初回読み込み後、Safari の共有メニューから「ホーム画面に追加」できます。
+
 ## 技術構成
 
 - React + Vite + TypeScript
