@@ -4,7 +4,7 @@ import { registerSW } from "virtual:pwa-register";
 import App from "./App";
 import "./styles.css";
 
-registerSW({
+const updateServiceWorker = registerSW({
   onNeedRefresh() {
     window.dispatchEvent(new Event("pwa-update-available"));
   },
@@ -12,6 +12,8 @@ registerSW({
     window.dispatchEvent(new Event("pwa-offline-ready"));
   }
 });
+
+window.updateHomecareServiceWorker = () => updateServiceWorker(true);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

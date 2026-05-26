@@ -24,6 +24,7 @@ import {
   NavLink,
   Route,
   Routes,
+  useLocation,
   useNavigate,
   useParams
 } from "react-router-dom";
@@ -408,6 +409,13 @@ function App() {
   }, []);
 
   const dismissNotice = () => setNotice("");
+  const applyUpdate = async () => {
+    if (window.updateHomecareServiceWorker) {
+      await window.updateHomecareServiceWorker();
+      return;
+    }
+    window.location.reload();
+  };
 
   return (
     <BrowserRouter basename={routerBaseName}>
@@ -449,7 +457,7 @@ function App() {
               <button
                 type="button"
                 className="touch-target rounded-md bg-amber-600 px-4 py-2 font-semibold text-white"
-                onClick={() => window.location.reload()}
+                onClick={() => void applyUpdate()}
               >
                 更新する
               </button>
@@ -1008,6 +1016,7 @@ function SortableMedicationPatientCard({
 }
 
 function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+  const navigate = useNavigate();
   const facilityPatients = useMemo(
     () => sortPatientsByOrder(data.patients.filter((patient) => patient.facilityName === "老人ホームR")),
     [data.patients]
@@ -1062,6 +1071,13 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => navigate("/patients/new?facility=老人ホームR")}
+              className="touch-target rounded-md bg-care-700 px-4 py-2 font-semibold text-white"
+            >
+              患者を追加
+            </button>
             {import.meta.env.DEV ? (
               <button
                 type="button"
@@ -1073,9 +1089,9 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
                     facilityName: "老人ホームR"
                   })
                 }
-                className="touch-target rounded-md bg-care-700 px-4 py-2 font-semibold text-white"
+                className="touch-target rounded-md border border-slate-300 px-4 py-2 font-semibold"
               >
-                老人ホームR患者を追加
+                模擬患者を追加
               </button>
             ) : null}
             <Badge tone="slate">対象 {facilityPatients.length} / 20</Badge>
@@ -1603,6 +1619,9 @@ function MedicationLine({
 function PatientsPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const initialFacilityName =
+    id === "new" ? new URLSearchParams(location.search).get("facility") || "" : "";
   const selectedId = id === "new" ? "" : id || data.patients[0]?.id || "";
   const selectedPatient = data.patients.find((patient) => patient.id === selectedId);
 
@@ -1614,8 +1633,9 @@ function PatientsPage({ data, reload }: { data: AppData; reload: () => Promise<v
         onCreate={() => navigate("/patients/new")}
       />
       <PatientDetail
-        key={id || selectedId || "new"}
+        key={`${id || selectedId || "new"}-${initialFacilityName}`}
         patient={id === "new" ? undefined : selectedPatient}
+        initialFacilityName={initialFacilityName}
         data={data}
         reload={reload}
       />
@@ -1717,17 +1737,21 @@ function PatientSidebar({
 
 function PatientDetail({
   patient,
+  initialFacilityName = "",
   data,
   reload
 }: {
   patient?: Patient;
+  initialFacilityName?: string;
   data: AppData;
   reload: () => Promise<void>;
 }) {
   const navigate = useNavigate();
   const [saved, setSaved] = useState("");
   const [activeTab, setActiveTab] = useState<PatientDetailTab>("basic");
-  const [form, setForm] = useState<PatientFormValues>(patient ? toPatientForm(patient) : emptyPatientForm);
+  const [form, setForm] = useState<PatientFormValues>(
+    patient ? toPatientForm(patient) : createPatientForm(initialFacilityName)
+  );
   const [outpatientInstitutionId, setOutpatientInstitutionId] = useState("");
   const existingVisit = patient ? data.visits.find((visit) => visit.patientId === patient.id && !visit.completed) : undefined;
   const [visit, setVisit] = useState<Visit>(existingVisit || emptyVisit(patient?.id || ""));
@@ -3072,6 +3096,12 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
       </section>
 
       <div className="space-y-4">
+        {editingCutoffSummary ? (
+          <MedicalInstitutionCutoffSummaryCard
+            summary={editingCutoffSummary}
+            onSaveCutoff={saveInstitutionCutoff}
+          />
+        ) : null}
         <aside className="rounded-md border border-slate-200 bg-white p-4">
           <h2 className="text-xl font-bold">{editingInstitution ? "医療機関編集" : "医療機関追加"}</h2>
           <div className="mt-4 grid gap-3">
@@ -3140,12 +3170,6 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
             ) : null}
           </div>
         </aside>
-        {editingCutoffSummary ? (
-          <MedicalInstitutionCutoffSummaryCard
-            summary={editingCutoffSummary}
-            onSaveCutoff={saveInstitutionCutoff}
-          />
-        ) : null}
       </div>
 
       {saved ? (
@@ -4614,6 +4638,15 @@ function toPatientForm(patient: Patient): PatientFormValues {
     prescriptionDays: patient.prescriptionDays || 0,
     nextVisitDate: patient.nextVisitDate || "",
     isNextVisitDateManual: Boolean(patient.isNextVisitDateManual)
+  };
+}
+
+function createPatientForm(facilityName = ""): PatientFormValues {
+  const locationLabel = facilityName.trim() || "個人宅";
+  return {
+    ...emptyPatientForm,
+    locationType: locationLabel === "個人宅" ? "home" : "facility",
+    facilityName: locationLabel
   };
 }
 
