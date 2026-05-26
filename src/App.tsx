@@ -1335,7 +1335,7 @@ function MedicalInstitutionCutoffSummaryCard({
       </div>
 
       <div className="mt-3 rounded-md border border-care-100 bg-care-50 p-3">
-        <div className="grid gap-2 md:grid-cols-[1fr_7rem_1fr_auto] md:items-end">
+        <div className="grid gap-2 sm:grid-cols-2">
           <label className="grid gap-1">
             <span className="text-xs font-semibold text-care-900">対象患者へ反映する前回切日</span>
             <input
@@ -1369,7 +1369,7 @@ function MedicalInstitutionCutoffSummaryCard({
             onClick={() => void applyToPatients()}
             disabled={!canBulkApply}
             className={[
-              "min-h-10 rounded-md px-3 font-semibold",
+              "min-h-10 rounded-md px-3 font-semibold sm:col-span-2",
               canBulkApply ? "bg-care-700 text-white" : "bg-slate-200 text-slate-500"
             ].join(" ")}
           >
@@ -1452,14 +1452,14 @@ function MedicalInstitutionCutoffRow({
   };
 
   return (
-    <div className="grid gap-2 rounded-md border border-slate-100 bg-slate-50 px-2 py-2 text-sm lg:grid-cols-[minmax(7rem,1fr)_auto_9rem_5rem_9rem_auto] lg:items-end">
+    <div className="grid gap-2 rounded-md border border-slate-100 bg-slate-50 px-2 py-2 text-sm sm:grid-cols-2">
       <div>
         <p className="font-bold text-slate-900">{row.patient.name}</p>
         <p className="text-xs font-semibold text-slate-500">
           {row.relation} / 往診：{row.nextVisitDate ? formatDateLabel(row.nextVisitDate) : "未設定"}
         </p>
       </div>
-      <span className="hidden rounded-md bg-white px-2 py-2 text-xs font-semibold text-slate-600 lg:inline">
+      <span className="rounded-md bg-white px-2 py-2 text-xs font-semibold text-slate-600">
         現切日 {row.cutoffDate ? formatDateLabel(row.cutoffDate) : "-"}
       </span>
       <label className="grid gap-1">
@@ -3343,7 +3343,7 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
   };
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_520px]">
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_400px]">
       <section className="rounded-md border border-slate-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
           <h1 className="text-2xl font-bold">医療機関一覧</h1>
@@ -3392,20 +3392,13 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
                   type="button"
                   onClick={() => setEditingId(institution.id)}
                   className={[
-                    "grid w-full gap-3 px-4 py-4 text-left hover:bg-slate-50 md:grid-cols-[minmax(18rem,1fr)_96px_96px_92px_72px]",
+                    "grid w-full gap-3 px-4 py-4 text-left hover:bg-slate-50 md:grid-cols-[minmax(18rem,1fr)_72px]",
                     editingId === institution.id ? "bg-care-50" : "bg-white"
                   ].join(" ")}
                 >
                   <span className="min-w-0">
                     <span className="block text-xl font-bold leading-snug">{institution.name}</span>
                     <span className="text-sm text-slate-600">{institution.kana}</span>
-                  </span>
-                  <span className="self-center font-semibold">{medicalInstitutionTypeLabels[institution.type]}</span>
-                  <span className="self-center font-semibold">
-                    {institution.homeVisitWeekday ? homeVisitWeekdayLabels[institution.homeVisitWeekday] : "-"}
-                  </span>
-                  <span className="self-center">
-                    {institution.isMainHomeCareClinic ? <Badge tone="care">対象</Badge> : <Badge tone="slate">-</Badge>}
                   </span>
                   <span className="self-center font-bold">{patientCount}人</span>
                 </button>
