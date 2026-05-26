@@ -1,5 +1,7 @@
 export type LocationType = "home" | "facility";
 
+export type BillingMethod = "cash" | "directDebit" | "bankTransfer" | "other" | "";
+
 export type MedicalInstitutionType = "clinic" | "hospital" | "dental" | "other";
 
 export type HomeVisitWeekday =
@@ -46,6 +48,10 @@ export interface Patient {
   hasNarcotics: boolean;
   hasColdStorageMedicine: boolean;
   memo: string;
+  billingMethod?: BillingMethod;
+  billingName?: string;
+  billingMemo?: string;
+  billingChecked?: boolean;
   createdAt: string;
   updatedAt: string;
 }

@@ -33,6 +33,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardCheck,
+  CreditCard,
   GripVertical,
   Home,
   Menu,
@@ -49,8 +50,10 @@ import {
 } from "lucide-react";
 import { addDays, eachDayOfInterval, format, parseISO } from "date-fns";
 import { db, seedSampleData } from "./db";
+import initialMedicalInstitutions from "./data/medicalInstitutions.json";
 import type {
   Checklist,
+  BillingMethod,
   HomeVisitWeekday,
   MedicalInstitution,
   MedicalInstitutionType,
@@ -98,7 +101,7 @@ type AppData = {
   medicalInstitutions: MedicalInstitution[];
 };
 
-type PatientDetailTab = "basic" | "schedule" | "tasks" | "checklist" | "medication" | "other";
+type PatientDetailTab = "basic" | "schedule" | "tasks" | "checklist" | "medication" | "billing" | "other";
 
 const medicationTimingLabels: Record<MedicationTiming, string> = {
   morning: "朝",
@@ -200,6 +203,18 @@ const homeVisitWeekdayLabels: Record<HomeVisitWeekday, string> = {
   sunday: "日曜日"
 };
 
+const billingMethodLabels: Record<Exclude<BillingMethod, "">, string> = {
+  cash: "現金",
+  directDebit: "口座引落",
+  bankTransfer: "振込",
+  other: "その他"
+};
+
+const facilityCalendarNameAliases: Record<string, string[]> = {
+  レオ: ["レオ", "老人ホームR"],
+  キレイ: ["キレイ", "老人ホームK"]
+};
+
 const emptyPatientForm: PatientFormValues = {
   name: "",
   kana: "",
@@ -221,7 +236,11 @@ const emptyPatientForm: PatientFormValues = {
   hasCrushing: false,
   hasNarcotics: false,
   hasColdStorageMedicine: false,
-  memo: ""
+  memo: "",
+  billingMethod: "",
+  billingName: "",
+  billingMemo: "",
+  billingChecked: false
 };
 
 const emptyMedicalInstitutionForm: Omit<MedicalInstitution, "id" | "createdAt" | "updatedAt"> = {
@@ -498,11 +517,19 @@ function App() {
                 path="/medical-institutions"
                 element={<MedicalInstitutionsPage data={data} reload={reload} />}
               />
+              <Route path="/billing" element={<BillingPage data={data} reload={reload} />} />
               <Route
                 path="/medication-audit"
                 element={<MedicationAuditPage data={data} reload={reload} />}
               />
-              <Route path="/facility-r-calendar" element={<FacilityRCalendarPage data={data} reload={reload} />} />
+              <Route
+                path="/facility-r-calendar"
+                element={<FacilityCalendarPage data={data} reload={reload} facilityName="レオ" />}
+              />
+              <Route
+                path="/facility-k-calendar"
+                element={<FacilityCalendarPage data={data} reload={reload} facilityName="キレイ" />}
+              />
               <Route path="/settings" element={<SettingsPage data={data} reload={reload} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
@@ -521,11 +548,12 @@ const routerBaseName = (() => {
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const items = [
     { to: "/", label: "ダッシュボード", icon: CalendarDays },
-    { to: "/patients", label: "患者一覧", icon: UsersRound },
     { to: "/tasks", label: "タスク", icon: ClipboardCheck },
+    { to: "/patients", label: "患者一覧", icon: UsersRound },
     { to: "/medical-institutions", label: "医療機関一覧", icon: Stethoscope },
-    { to: "/medication-audit", label: "服薬カレンダー鑑査", icon: Pill },
-    { to: "/facility-r-calendar", label: "老人ホームRカレンダー", icon: Package },
+    { to: "/billing", label: "請求", icon: CreditCard },
+    { to: "/facility-r-calendar", label: "レオ", icon: Package },
+    { to: "/facility-k-calendar", label: "キレイ", icon: Package },
     { to: "/settings", label: "設定", icon: Settings }
   ];
 
@@ -604,7 +632,7 @@ function Dashboard({ data }: { data: AppData }) {
                 >
                   <span>
                     <span className="block text-lg font-bold">{patient.name}</span>
-                    <span className="text-slate-600">{patient.facilityName || "自宅"}</span>
+                    <span className="text-slate-600">{formatLocationLabel(patient.facilityName, "自宅")}</span>
                   </span>
                   <span className="rounded-md bg-rose-100 px-3 py-2 font-bold text-rose-800">
                     残薬 {visit.remainingDays}日
@@ -674,7 +702,7 @@ function DashboardList({ title, items, data }: { title: string; items: Visit[]; 
                     {isDueToday(visit.visitDate) ? "訪問" : "配達"}
                   </span>
                 </div>
-                <p className="mt-1 text-slate-600">{patient.facilityName || patient.address || "自宅"}</p>
+                <p className="mt-1 text-slate-600">{formatLocationLabel(patient.facilityName || patient.address, "自宅")}</p>
               </Link>
             );
           })
@@ -804,10 +832,10 @@ function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Pr
   const seedMockPatients = async (facilityName = "確認施設") => {
     const existingMockCount = data.patients.filter((patient) => /^模擬患者\d+/.test(patient.name)).length;
     const targetTotal = 20;
-    const currentTargetCount =
-      facilityName === "老人ホームR"
-        ? data.patients.filter((patient) => patient.facilityName === "老人ホームR").length
-        : data.patients.length;
+    const isFacilityCalendar = isFacilityCalendarFacility(facilityName);
+    const currentTargetCount = isFacilityCalendar
+      ? data.patients.filter((patient) => patientMatchesFacilityCalendar(patient, facilityName)).length
+      : data.patients.length;
     const countToAdd = Math.max(0, targetTotal - currentTargetCount);
     if (countToAdd === 0) {
       setSeedMessage("すでに20件以上あります");
@@ -842,7 +870,7 @@ function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Pr
             kana: `モギカンジャ${suffix}`,
             birthday: "1940-01-01",
             locationType: "facility",
-            facilityName: facilityName === "老人ホームR" ? "老人ホームR" : `確認施設${((number - 1) % 5) + 1}`,
+            facilityName: isFacilityCalendar ? facilityName : `確認施設${((number - 1) % 5) + 1}`,
             address: "東京都テスト区1-1-1",
             phone: "03-0000-0000",
             doctorName: "テスト医師",
@@ -951,10 +979,10 @@ function MedicationAuditPage({ data, reload }: { data: AppData; reload: () => Pr
               </button>
               <button
                 type="button"
-                onClick={() => void seedMockPatients("老人ホームR")}
+                onClick={() => void seedMockPatients("レオ")}
                 className="touch-target rounded-md bg-care-700 px-4 py-2 font-semibold text-white"
               >
-                老人ホームR患者を追加
+                レオ患者を追加
               </button>
               </>
             ) : null}
@@ -1015,11 +1043,19 @@ function SortableMedicationPatientCard({
   );
 }
 
-function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+function FacilityCalendarPage({
+  data,
+  reload,
+  facilityName
+}: {
+  data: AppData;
+  reload: () => Promise<void>;
+  facilityName: string;
+}) {
   const navigate = useNavigate();
   const facilityPatients = useMemo(
-    () => sortPatientsByOrder(data.patients.filter((patient) => patient.facilityName === "老人ホームR")),
-    [data.patients]
+    () => sortPatientsByOrder(data.patients.filter((patient) => patientMatchesFacilityCalendar(patient, facilityName))),
+    [data.patients, facilityName]
   );
   const unplacedFacilityPatients = useMemo(
     () => facilityPatients.filter((patient) => !isValidFacilityCalendarSlot(patient.facilityCalendarSlot)),
@@ -1055,11 +1091,7 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
     });
 
     await reload();
-    setSeedMessage(
-      assignedCount
-        ? `未配置の患者 ${assignedCount}名を空きマスへ配置しました`
-        : "配置できる空きマスがありません"
-    );
+    setSeedMessage(assignedCount ? `未配置の患者 ${assignedCount}名を空きマスへ配置しました` : "配置できる空きマスがありません");
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -1096,16 +1128,21 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
           <div>
             <h1 className="flex items-center gap-2 text-2xl font-bold">
               <Package size={26} />
-              老人ホームRカレンダー
+              {facilityName}
             </h1>
             <p className="mt-1 text-slate-600">
-              施設名が老人ホームRの患者だけを、20マスへ固定表示します。
+              施設名が{facilityName}の患者だけを、20マスへ固定表示します。
             </p>
+            {isFacilityCalendarFacility(facilityName) ? (
+              <p className="mt-1 font-semibold text-care-900">
+                {getFacilityInstallationPeriodLabel(facilityName)}
+              </p>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
-              onClick={() => navigate("/patients/new?facility=老人ホームR")}
+              onClick={() => navigate(`/patients/new?facility=${encodeURIComponent(facilityName)}`)}
               className="touch-target rounded-md bg-care-700 px-4 py-2 font-semibold text-white"
             >
               患者を追加
@@ -1118,7 +1155,7 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
                     data,
                     reload,
                     setSeedMessage,
-                    facilityName: "老人ホームR"
+                    facilityName
                   })
                 }
                 className="touch-target rounded-md border border-slate-300 px-4 py-2 font-semibold"
@@ -1134,7 +1171,7 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
         {unplacedFacilityPatients.length ? (
           <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 p-3">
             <p className="font-semibold text-amber-900">
-              未配置の老人ホームR患者が {unplacedFacilityPatients.length} 名います。
+              未配置の{facilityName}患者が {unplacedFacilityPatients.length} 名います。
             </p>
             <button
               type="button"
@@ -1519,10 +1556,10 @@ async function seedMedicationMockPatients({
 }) {
   const existingMockCount = data.patients.filter((patient) => /^模擬患者\d+/.test(patient.name)).length;
   const targetTotal = 20;
-  const currentTargetCount =
-    facilityName === "老人ホームR"
-      ? data.patients.filter((patient) => patient.facilityName === "老人ホームR").length
-      : data.patients.length;
+  const isFacilityCalendar = isFacilityCalendarFacility(facilityName);
+  const currentTargetCount = isFacilityCalendar
+    ? data.patients.filter((patient) => patientMatchesFacilityCalendar(patient, facilityName)).length
+    : data.patients.length;
   const countToAdd = Math.max(0, targetTotal - currentTargetCount);
   if (countToAdd === 0) {
     setSeedMessage("すでに20件以上あります");
@@ -1553,13 +1590,12 @@ async function seedMedicationMockPatients({
         await db.patients.add({
           id: patientId,
           order: data.patients.length + index,
-          facilityCalendarSlot:
-            facilityName === "老人ホームR" ? currentTargetCount + index + 1 : undefined,
+          facilityCalendarSlot: isFacilityCalendar ? currentTargetCount + index + 1 : undefined,
           name: `模擬患者${suffix}`,
           kana: `モギカンジャ${suffix}`,
           birthday: "1940-01-01",
           locationType: "facility",
-          facilityName: facilityName === "老人ホームR" ? "老人ホームR" : `確認施設${((number - 1) % 5) + 1}`,
+          facilityName: isFacilityCalendar ? facilityName : `確認施設${((number - 1) % 5) + 1}`,
           address: "東京都テスト区1-1-1",
           phone: "03-0000-0000",
           doctorName: "テスト医師",
@@ -1687,7 +1723,7 @@ function MedicationPatientCard({
         <div>
           {slotNumber && showAuditStatus ? <p className="text-sm font-bold text-slate-500">位置番号：{slotNumber}</p> : null}
           <h2 className="text-xl font-bold">{patient.name}</h2>
-          {showFacilityName ? <p className="text-slate-600">{patient.facilityName || "自宅"}</p> : null}
+          {showFacilityName ? <p className="text-slate-600">{formatLocationLabel(patient.facilityName, "自宅")}</p> : null}
         </div>
         {reorderMode ? (
           <button
@@ -1719,7 +1755,6 @@ function MedicationPatientCard({
         <div className="mt-3 space-y-1 text-sm font-semibold text-slate-700">
           <p>設置期間：{cutoffSummary.installationPeriod || "未設定"}</p>
           <p>最短切日：{cutoffSummary.shortestCutoffDate ? formatDateLabel(cutoffSummary.shortestCutoffDate) : "未設定"}</p>
-          <p>鑑査状態：{medicationStatusLabels[status]}</p>
         </div>
       )}
 
@@ -1869,7 +1904,7 @@ function PatientSidebar({
                 <div className="flex items-start justify-between gap-3">
                   <span>
                     <span className="block text-lg font-bold">{patient.name}</span>
-                    <span className="text-slate-600">{patient.facilityName || "自宅"}</span>
+                    <span className="text-slate-600">{formatLocationLabel(patient.facilityName, "自宅")}</span>
                   </span>
                   {todayAction ? (
                     <span className="rounded-md bg-care-100 px-2 py-1 text-sm font-bold text-care-900">
@@ -1977,17 +2012,17 @@ function PatientDetail({
 
     const timestamp = nowString();
     const patientId = patient?.id || createId();
-    const locationLabel = form.facilityName.trim() || "個人宅";
-    const isFacilityRPatient = locationLabel === "老人ホームR";
+    const locationLabel = normalizeFacilityCalendarName(form.facilityName.trim() || "個人宅");
+    const isFacilityCalendarPatient = isFacilityCalendarFacility(locationLabel);
     const existingFacilitySlot = patient?.facilityCalendarSlot || form.facilityCalendarSlot;
-    const facilityCalendarSlot = isFacilityRPatient
+    const facilityCalendarSlot = isFacilityCalendarPatient
       ? isValidFacilityCalendarSlot(existingFacilitySlot)
         ? existingFacilitySlot
-        : getNextAvailableFacilityCalendarSlot(data.patients, patientId)
+        : getNextAvailableFacilityCalendarSlot(data.patients, patientId, locationLabel)
       : undefined;
 
-    if (isFacilityRPatient && !facilityCalendarSlot) {
-      setSaved("老人ホームRカレンダーの空きマスがありません");
+    if (isFacilityCalendarPatient && !facilityCalendarSlot) {
+      setSaved(`${locationLabel}カレンダーの空きマスがありません`);
       return;
     }
 
@@ -2004,6 +2039,10 @@ function PatientDetail({
       prescriptionDays: Number(form.prescriptionDays) || 0,
       nextVisitDate: form.isNextVisitDateManual ? form.nextVisitDate || "" : calculatedNextVisitDate,
       isNextVisitDateManual: Boolean(form.isNextVisitDateManual),
+      billingMethod: form.billingMethod || "",
+      billingName: form.billingName || "",
+      billingMemo: form.billingMemo || "",
+      billingChecked: Boolean(form.billingChecked),
       createdAt: patient?.createdAt || timestamp,
       updatedAt: timestamp
     };
@@ -2378,6 +2417,44 @@ function PatientDetail({
         />
       ) : null}
 
+      {activeTab === "billing" ? (
+        <section className="rounded-md border border-slate-200 bg-white">
+          <div className="border-b border-slate-100 px-4 py-3">
+            <h2 className="text-xl font-bold">請求</h2>
+          </div>
+          <div className="grid gap-4 p-4 md:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="font-semibold text-slate-700">請求方法</span>
+              <select
+                className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
+                value={form.billingMethod || ""}
+                onChange={(event) => updateForm("billingMethod", event.target.value as BillingMethod)}
+              >
+                <option value="">未選択</option>
+                {Object.entries(billingMethodLabels).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <TextInput
+              label="請求先"
+              value={form.billingName || ""}
+              onChange={(value) => updateForm("billingName", value)}
+            />
+            <label className="grid gap-1 md:col-span-2">
+              <span className="font-semibold text-slate-700">メモ</span>
+              <textarea
+                className="min-h-28 rounded-md border border-slate-300 px-3 py-3"
+                value={form.billingMemo || ""}
+                onChange={(event) => updateForm("billingMemo", event.target.value)}
+              />
+            </label>
+          </div>
+        </section>
+      ) : null}
+
       {activeTab === "other" ? (
         <section className="rounded-md border border-slate-200 bg-white">
           <div className="border-b border-slate-100 px-4 py-3">
@@ -2424,6 +2501,7 @@ function PatientDetailTabs({
     { id: "tasks", label: "タスク", icon: ClipboardCheck },
     { id: "checklist", label: "チェック", icon: CheckCircle2 },
     { id: "medication", label: "服薬カレンダー", icon: Pill },
+    { id: "billing", label: "請求", icon: CreditCard },
     { id: "other", label: "その他", icon: Settings }
   ];
 
@@ -3465,7 +3543,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
       updatedAt: timestamp
     };
     await db.medicationPackageItems.add(nextItem);
-    await normalizePackageOrder(sortPackageItemsForPatient(patient, [...patternItems, nextItem], data.medicalInstitutions));
+    await normalizePackageOrder(sortPackageItemsByBasicRule(patient, [...patternItems, nextItem], data.medicalInstitutions));
     setDraft({
       dosageForm: "tablet",
       quantity: "",
@@ -3489,7 +3567,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
     const nextItems = patternItems.map((current) =>
       current.id === item.id ? { ...current, ...patch, updatedAt } : current
     );
-    await normalizePackageOrder(sortPackageItemsForPatient(patient, nextItems, data.medicalInstitutions));
+    await normalizePackageOrder(sortPackageItemsByBasicRule(patient, nextItems, data.medicalInstitutions));
     await reload();
     setSavedItemId(item.id);
     window.setTimeout(() => {
@@ -3580,7 +3658,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold">{patient.name} 一包化編集</h1>
-            <p className="mt-1 text-slate-600">{patient.facilityName || "自宅"}</p>
+            <p className="mt-1 text-slate-600">{formatLocationLabel(patient.facilityName, "自宅")}</p>
           </div>
           <button
             type="button"
@@ -4032,7 +4110,7 @@ function TasksPage({ data, reload }: { data: AppData; reload: () => Promise<void
               >
                 <Link to={`/patients/${task.patientId}`} className="min-h-11">
                   <p className="text-lg font-bold">{task.title}</p>
-                  <p>{patient?.name || "患者未設定"} / {patient?.facilityName || "自宅"}</p>
+                  <p>{patient?.name || "患者未設定"} / {formatLocationLabel(patient?.facilityName || "", "自宅")}</p>
                 </Link>
                 <span className="self-center rounded-md bg-slate-100 px-3 py-2 font-semibold text-slate-700">
                   {taskTypeLabels[task.type]} / {formatDateLabel(task.dueDate)}
@@ -4049,6 +4127,131 @@ function TasksPage({ data, reload }: { data: AppData; reload: () => Promise<void
           })
         ) : (
           <p className="p-5 text-slate-600">タスクはありません</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function BillingPage({ data, reload }: { data: AppData; reload: () => Promise<void> }) {
+  const [showCash, setShowCash] = useState(false);
+  const [showOther, setShowOther] = useState(false);
+  const billingPatients = data.patients
+    .filter((patient) => {
+      const method = patient.billingMethod || "";
+      if (!method) return false;
+      if (method === "cash" && !showCash) return false;
+      if (method === "other" && !showOther) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const facilityDiff = formatLocationLabel(a.facilityName, "個人宅").localeCompare(
+        formatLocationLabel(b.facilityName, "個人宅"),
+        "ja"
+      );
+      if (facilityDiff !== 0) return facilityDiff;
+      const methodDiff = (a.billingMethod || "").localeCompare(b.billingMethod || "");
+      if (methodDiff !== 0) return methodDiff;
+      return a.kana.localeCompare(b.kana, "ja");
+    });
+  const groupedPatients = billingPatients.reduce<Array<{ facilityName: string; patients: Patient[] }>>((groups, patient) => {
+    const facilityName = formatLocationLabel(patient.facilityName, "個人宅");
+    const group = groups.find((item) => item.facilityName === facilityName);
+    if (group) {
+      group.patients.push(patient);
+    } else {
+      groups.push({ facilityName, patients: [patient] });
+    }
+    return groups;
+  }, []);
+
+  const toggleBillingChecked = async (patient: Patient) => {
+    await db.patients.update(patient.id, {
+      billingChecked: !patient.billingChecked,
+      updatedAt: nowString()
+    });
+    await reload();
+  };
+
+  return (
+    <section className="rounded-md border border-slate-200 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <div>
+          <h1 className="text-2xl font-bold">請求チェックリスト</h1>
+          <p className="mt-1 text-slate-600">口座引落・振込の患者を一覧表示します。</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Toggle label="現金も表示" checked={showCash} onChange={setShowCash} />
+          <Toggle label="その他も表示" checked={showOther} onChange={setShowOther} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-[minmax(8rem,1fr)_8rem_minmax(8rem,1fr)_7rem_7rem] gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2 text-sm font-bold text-slate-600 md:grid-cols-[minmax(12rem,1fr)_12rem_minmax(12rem,1fr)_12rem_10rem] md:gap-3">
+        <span>患者名</span>
+        <span>請求先</span>
+        <span>メモ</span>
+        <span>所属先</span>
+        <span>支払い方法</span>
+      </div>
+
+      <div className="divide-y divide-slate-100">
+        {groupedPatients.length ? (
+          groupedPatients.map((group) => (
+            <section key={group.facilityName}>
+              <div className="flex items-center justify-between gap-3 bg-slate-50 px-4 py-3">
+                <h2 className="text-lg font-bold">{group.facilityName}</h2>
+                <Badge tone="slate">{group.patients.length}名</Badge>
+              </div>
+              <div>
+                {group.patients.map((patient) => (
+                  <div
+                    key={patient.id}
+                    className={[
+                      "grid items-center gap-2 border-b border-slate-100 px-4 py-3 last:border-b-0 md:grid-cols-[minmax(12rem,1fr)_12rem_minmax(12rem,1fr)_12rem_10rem] md:gap-3",
+                      patient.billingChecked ? "bg-care-50 text-slate-500" : "bg-white"
+                    ].join(" ")}
+                  >
+                    <div className="flex min-h-11 items-center gap-3">
+                      <input
+                        type="checkbox"
+                        className="h-6 w-6 accent-care-700"
+                        checked={Boolean(patient.billingChecked)}
+                        onChange={() => void toggleBillingChecked(patient)}
+                      />
+                      <Link
+                        to={`/patients/${patient.id}`}
+                        className="flex min-h-11 items-center hover:text-care-800"
+                      >
+                        <span className="text-lg font-bold">{patient.name}</span>
+                      </Link>
+                    </div>
+                    <span className="font-semibold">
+                      <span className="mr-2 text-xs font-bold text-slate-500 md:hidden">請求先</span>
+                      {patient.billingName || "-"}
+                    </span>
+                    <span>
+                      <span className="mr-2 text-xs font-bold text-slate-500 md:hidden">メモ</span>
+                      <span className="font-semibold">{patient.billingMemo || "-"}</span>
+                    </span>
+                    <span className="font-semibold">
+                      <span className="mr-2 text-xs font-bold text-slate-500 md:hidden">所属先</span>
+                      {formatLocationLabel(patient.facilityName, "個人宅")}
+                    </span>
+                    <span className="w-fit rounded-md bg-slate-100 px-3 py-2 font-semibold text-slate-800">
+                      <span className="mr-2 text-xs font-bold text-slate-500 md:hidden">支払い方法</span>
+                      {patient.billingMethod ? billingMethodLabels[patient.billingMethod] : "未選択"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))
+        ) : (
+          <p className="p-5 text-slate-600">
+            {showCash || showOther
+              ? "表示条件に該当する患者はいません"
+              : "口座引落・振込の患者はいません"}
+          </p>
         )}
       </div>
     </section>
@@ -4404,10 +4607,32 @@ function isValidFacilityCalendarSlot(slot?: number) {
   return Boolean(slot && slot >= 1 && slot <= 20);
 }
 
-function getNextAvailableFacilityCalendarSlot(patients: Patient[], currentPatientId = "") {
+function normalizeFacilityCalendarName(facilityName: string) {
+  const trimmed = facilityName.trim();
+  const canonicalName = Object.entries(facilityCalendarNameAliases).find(([, names]) =>
+    names.includes(trimmed)
+  )?.[0];
+  return canonicalName || trimmed;
+}
+
+function formatLocationLabel(facilityName: string, fallback = "個人宅") {
+  const trimmed = facilityName.trim();
+  return trimmed ? normalizeFacilityCalendarName(trimmed) : fallback;
+}
+
+function isFacilityCalendarFacility(facilityName: string) {
+  return Boolean(facilityCalendarNameAliases[normalizeFacilityCalendarName(facilityName)]);
+}
+
+function patientMatchesFacilityCalendar(patient: Patient, facilityName: string) {
+  const names = facilityCalendarNameAliases[normalizeFacilityCalendarName(facilityName)] || [facilityName];
+  return names.includes(patient.facilityName);
+}
+
+function getNextAvailableFacilityCalendarSlot(patients: Patient[], currentPatientId = "", facilityName = "レオ") {
   const occupiedSlots = new Set(
     patients
-      .filter((patient) => patient.id !== currentPatientId && patient.facilityName === "老人ホームR")
+      .filter((patient) => patient.id !== currentPatientId && patientMatchesFacilityCalendar(patient, facilityName))
       .map((patient) => patient.facilityCalendarSlot)
       .filter(isValidFacilityCalendarSlot)
   );
@@ -4455,7 +4680,9 @@ function formatPackageItem(item: MedicationPackageItem) {
     : item.dosageForm === "tablet"
       ? `錠（${quantityText}）`
       : item.dosageForm === "powder"
-        ? "粉"
+        ? item.quantity
+          ? `粉（${quantityText}）`
+          : "粉"
         : item.dosageForm === "magnesium"
           ? `カマグ（${quantityText}）`
           : item.dosageForm === "aspark"
@@ -4528,6 +4755,16 @@ async function normalizePackageOrder(items: MedicationPackageItem[]) {
 }
 
 function sortPackageItemsForPatient(
+  patient: Patient | undefined,
+  items: MedicationPackageItem[],
+  institutions: MedicalInstitution[]
+) {
+  void patient;
+  void institutions;
+  return [...items].sort((a, b) => a.order - b.order);
+}
+
+function sortPackageItemsByBasicRule(
   patient: Patient | undefined,
   items: MedicationPackageItem[],
   institutions: MedicalInstitution[]
@@ -4637,7 +4874,7 @@ function getMedicalInstitutionCutoffSummary({
         (cutoff) => cutoff.patientId === patient.id && cutoff.medicalInstitutionId === institution.id
       );
       const relation = getPatientInstitutionRelation(patient, institution, patientCutoff, packagePatterns, packageItems);
-      if (!relation && !(showUnlinkedFacilityPatients && patient.facilityName === "老人ホームR")) {
+      if (!relation && !(showUnlinkedFacilityPatients && patientMatchesFacilityCalendar(patient, "レオ"))) {
         return undefined;
       }
       return {
@@ -4701,11 +4938,23 @@ function calcNextWeekdayDate(fromDate: string, targetWeekday: number) {
   return fromDate;
 }
 
+function getFacilityInstallationPeriodLabel(facilityName: string) {
+  if (normalizeFacilityCalendarName(facilityName) === "レオ") {
+    const startDate = calcNextWeekdayDate(todayString(), 4);
+    const endDate = format(addDays(parseISO(startDate), 6), "yyyy-MM-dd");
+    return `設置期間：${formatDateLabel(startDate)}〜${formatDateLabel(endDate)}（木曜始まり・水曜終わり / 1週間分）`;
+  }
+
+  const startDate = calcNextWeekdayDate(todayString(), 5);
+  const endDate = format(addDays(parseISO(startDate), 13), "yyyy-MM-dd");
+  return `設置期間：${formatDateLabel(startDate)}〜${formatDateLabel(endDate)}（金曜始まり・木曜終わり / 2週間分）`;
+}
+
 function getRegisteredLocationOptions(patients: Patient[]) {
-  const options = new Set<string>(["個人宅"]);
+  const options = new Set<string>(["個人宅", "レオ", "キレイ"]);
 
   patients.forEach((patient) => {
-    const facilityName = patient.facilityName.trim();
+    const facilityName = normalizeFacilityCalendarName(patient.facilityName.trim());
     if (facilityName) {
       options.add(facilityName);
     }
@@ -4751,19 +5000,31 @@ function normalizeBackupData(parsed: Partial<{ data: Partial<AppData> }> & Parti
   }
 
   return {
-    patients: source.patients || [],
-    visits: source.visits || [],
-    tasks: source.tasks || [],
-    checklists: source.checklists || [],
-    medicationCalendars: source.medicationCalendars || [],
-    medicationCalendarDays: source.medicationCalendarDays || [],
-    medicationCalendarAudits: source.medicationCalendarAudits || [],
-    medicationPackagePatterns: source.medicationPackagePatterns || [],
-    medicationPackageItems: source.medicationPackageItems || [],
-    medicationPackagePhotos: source.medicationPackagePhotos || [],
-    medicationClinicCutoffs: source.medicationClinicCutoffs || [],
-    medicalInstitutions: source.medicalInstitutions || []
+    patients: normalizeBackupArray(source.patients, "patients"),
+    visits: normalizeBackupArray(source.visits, "visits"),
+    tasks: normalizeBackupArray(source.tasks, "tasks"),
+    checklists: normalizeBackupArray(source.checklists, "checklists"),
+    medicationCalendars: normalizeBackupArray(source.medicationCalendars, "medicationCalendars"),
+    medicationCalendarDays: normalizeBackupArray(source.medicationCalendarDays, "medicationCalendarDays"),
+    medicationCalendarAudits: normalizeBackupArray(source.medicationCalendarAudits, "medicationCalendarAudits"),
+    medicationPackagePatterns: normalizeBackupArray(source.medicationPackagePatterns, "medicationPackagePatterns"),
+    medicationPackageItems: normalizeBackupArray(source.medicationPackageItems, "medicationPackageItems"),
+    medicationPackagePhotos: normalizeBackupArray(source.medicationPackagePhotos, "medicationPackagePhotos"),
+    medicationClinicCutoffs: normalizeBackupArray(source.medicationClinicCutoffs, "medicationClinicCutoffs"),
+    medicalInstitutions: normalizeBackupArray(
+      source.medicalInstitutions,
+      "medicalInstitutions",
+      initialMedicalInstitutions as MedicalInstitution[]
+    )
   };
+}
+
+function normalizeBackupArray<T>(value: T[] | undefined, key: string, fallback: T[] = []) {
+  if (value === undefined) return fallback;
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid backup: ${key} is not an array`);
+  }
+  return value;
 }
 
 async function replaceAllAppData(data: AppData) {
@@ -4878,18 +5139,22 @@ function toPatientForm(patient: Patient): PatientFormValues {
   const { id, order, createdAt, updatedAt, ...form } = patient;
   return {
     ...form,
-    facilityName: patient.facilityName || (patient.locationType === "home" ? "個人宅" : ""),
+    facilityName: formatLocationLabel(patient.facilityName, patient.locationType === "home" ? "個人宅" : ""),
     mainMedicalInstitutionId: patient.mainMedicalInstitutionId || "",
     additionalMedicalInstitutionIds: patient.additionalMedicalInstitutionIds || [],
     lastVisitDate: patient.lastVisitDate || "",
     prescriptionDays: patient.prescriptionDays || 0,
     nextVisitDate: patient.nextVisitDate || "",
-    isNextVisitDateManual: Boolean(patient.isNextVisitDateManual)
+    isNextVisitDateManual: Boolean(patient.isNextVisitDateManual),
+    billingMethod: patient.billingMethod || "",
+    billingName: patient.billingName || "",
+    billingMemo: patient.billingMemo || "",
+    billingChecked: Boolean(patient.billingChecked)
   };
 }
 
 function createPatientForm(facilityName = ""): PatientFormValues {
-  const locationLabel = facilityName.trim() || "個人宅";
+  const locationLabel = formatLocationLabel(facilityName, "個人宅");
   return {
     ...emptyPatientForm,
     locationType: locationLabel === "個人宅" ? "home" : "facility",
