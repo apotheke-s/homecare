@@ -1998,17 +1998,13 @@ function PatientDetail({
     ? data.medicationCalendars.filter((calendar) => calendar.patientId === patient.id)
     : [];
   const refillDays = daysUntil(visit.nextRefillDate);
-  const selectedMainInstitution = data.medicalInstitutions.find(
-    (institution) => institution.id === form.mainMedicalInstitutionId
-  );
-  const calculatedNextVisitDate = calcNextHomeVisitDate(
+  const calculatedNextCutoffDate = calcNextCutoffDate(
     form.lastVisitDate || "",
-    Number(form.prescriptionDays) || 0,
-    selectedMainInstitution?.homeVisitWeekday || ""
+    Number(form.prescriptionDays) || 0
   );
-  const displayedNextVisitDate = form.isNextVisitDateManual
+  const displayedNextCutoffDate = form.isNextVisitDateManual
     ? form.nextVisitDate || ""
-    : calculatedNextVisitDate;
+    : calculatedNextCutoffDate;
   const registeredLocationOptions = useMemo(
     () => getRegisteredLocationOptions(data.patients),
     [data.patients]
@@ -2075,7 +2071,7 @@ function PatientDetail({
       additionalMedicalInstitutionIds: form.additionalMedicalInstitutionIds || [],
       lastVisitDate: form.lastVisitDate || "",
       prescriptionDays: Number(form.prescriptionDays) || 0,
-      nextVisitDate: form.isNextVisitDateManual ? form.nextVisitDate || "" : calculatedNextVisitDate,
+      nextVisitDate: form.isNextVisitDateManual ? form.nextVisitDate || "" : calculatedNextCutoffDate,
       isNextVisitDateManual: Boolean(form.isNextVisitDateManual),
       billingMethod: form.billingMethod || "",
       billingName: form.billingName || "",
@@ -2183,14 +2179,14 @@ function PatientDetail({
     setForm((current) => ({
       ...current,
       isNextVisitDateManual: true,
-      nextVisitDate: current.nextVisitDate || calculatedNextVisitDate
+      nextVisitDate: current.nextVisitDate || calculatedNextCutoffDate
     }));
   };
   const disableManualNextVisitDate = () => {
     setForm((current) => ({
       ...current,
       isNextVisitDateManual: false,
-      nextVisitDate: calculatedNextVisitDate
+      nextVisitDate: calculatedNextCutoffDate
     }));
   };
 
@@ -2304,39 +2300,33 @@ function PatientDetail({
           </div>
           <TextInput label="訪問看護" value={form.nurseContact} onChange={(value) => updateForm("nurseContact", value)} />
           <TextInput label="家族連絡先" value={form.familyContact} onChange={(value) => updateForm("familyContact", value)} />
-          <section className="grid gap-3 rounded-md border border-care-100 bg-care-50 p-4 md:col-span-2 md:grid-cols-4">
-            <h2 className="text-lg font-bold text-care-950 md:col-span-4">往診日自動計算</h2>
-            <DateInput
-              label="前回往診日"
-              value={form.lastVisitDate || ""}
-              onChange={(value) => updateForm("lastVisitDate", value)}
-            />
-            <TextInput
-              label="処方日数"
-              type="number"
-              value={form.prescriptionDays ? String(form.prescriptionDays) : ""}
-              onChange={(value) => updateForm("prescriptionDays", Number(value) || 0)}
-            />
-            <div className="rounded-md border border-care-200 bg-white p-3">
-              <p className="font-semibold text-slate-700">医療機関の往診曜日</p>
-              <p className="mt-2 text-xl font-bold">
-                {selectedMainInstitution?.homeVisitWeekday
-                  ? homeVisitWeekdayLabels[selectedMainInstitution.homeVisitWeekday]
-                  : "未設定"}
-              </p>
+          <section className="grid gap-3 rounded-md border border-care-100 bg-care-50 p-4 md:col-span-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <h2 className="text-lg font-bold text-care-950 lg:col-span-2">切日計算</h2>
+            <div className="grid gap-3 sm:grid-cols-2 lg:col-span-2">
+              <DateInput
+                label="前回切日"
+                value={form.lastVisitDate || ""}
+                onChange={(value) => updateForm("lastVisitDate", value)}
+              />
+              <TextInput
+                label="処方日数"
+                type="number"
+                value={form.prescriptionDays ? String(form.prescriptionDays) : ""}
+                onChange={(value) => updateForm("prescriptionDays", Number(value) || 0)}
+              />
             </div>
-            <div className="grid gap-2">
+            <div className="grid gap-2 lg:col-span-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
               {form.isNextVisitDateManual ? (
                 <DateInput
-                  label="次回往診日"
+                  label="次回切日"
                   value={form.nextVisitDate || ""}
                   onChange={(value) => updateForm("nextVisitDate", value)}
                 />
               ) : (
                 <div className="rounded-md border border-care-200 bg-white p-3">
-                  <p className="font-semibold text-slate-700">次回往診日 自動計算結果</p>
+                  <p className="font-semibold text-slate-700">次回切日 自動計算結果</p>
                   <p className="mt-2 text-xl font-bold">
-                    {displayedNextVisitDate ? formatDateLabel(displayedNextVisitDate) : "計算条件を入力"}
+                    {displayedNextCutoffDate ? formatDateLabel(displayedNextCutoffDate) : "計算条件を入力"}
                   </p>
                 </div>
               )}
