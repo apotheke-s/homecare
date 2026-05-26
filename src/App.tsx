@@ -1021,6 +1021,10 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
     () => sortPatientsByOrder(data.patients.filter((patient) => patient.facilityName === "老人ホームR")),
     [data.patients]
   );
+  const unplacedFacilityPatients = useMemo(
+    () => facilityPatients.filter((patient) => !isValidFacilityCalendarSlot(patient.facilityCalendarSlot)),
+    [facilityPatients]
+  );
   const [reorderMode, setReorderMode] = useState(false);
   const [seedMessage, setSeedMessage] = useState("");
   const sensors = useSensors(
@@ -1029,6 +1033,34 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
   );
 
   const slots = getFacilityCalendarSlots(facilityPatients);
+
+  const assignUnplacedPatients = async () => {
+    const occupiedSlots = new Set(
+      facilityPatients.map((patient) => patient.facilityCalendarSlot).filter(isValidFacilityCalendarSlot)
+    );
+    let assignedCount = 0;
+
+    await db.transaction("rw", db.patients, async () => {
+      for (const patient of unplacedFacilityPatients) {
+        const targetSlot = Array.from({ length: 20 }, (_, index) => index + 1).find((slot) => !occupiedSlots.has(slot));
+        if (!targetSlot) break;
+        occupiedSlots.add(targetSlot);
+        assignedCount += 1;
+        await db.patients.update(patient.id, {
+          facilityCalendarSlot: targetSlot,
+          order: targetSlot - 1,
+          updatedAt: nowString()
+        });
+      }
+    });
+
+    await reload();
+    setSeedMessage(
+      assignedCount
+        ? `未配置の患者 ${assignedCount}名を空きマスへ配置しました`
+        : "配置できる空きマスがありません"
+    );
+  };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -1099,6 +1131,20 @@ function FacilityRCalendarPage({ data, reload }: { data: AppData; reload: () => 
           </div>
         </div>
         {seedMessage ? <p className="mt-3 font-semibold text-care-900">{seedMessage}</p> : null}
+        {unplacedFacilityPatients.length ? (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-amber-200 bg-amber-50 p-3">
+            <p className="font-semibold text-amber-900">
+              未配置の老人ホームR患者が {unplacedFacilityPatients.length} 名います。
+            </p>
+            <button
+              type="button"
+              onClick={() => void assignUnplacedPatients()}
+              className="touch-target rounded-md bg-amber-600 px-4 py-2 font-semibold text-white"
+            >
+              空きマスに配置
+            </button>
+          </div>
+        ) : null}
       </section>
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void handleDragEnd(event)}>
@@ -1139,15 +1185,59 @@ type MedicalInstitutionCutoffSummary = {
 
 function MedicalInstitutionCutoffSummaryCard({
   summary,
-  onSaveCutoff
+  onSaveCutoff,
+  onApplyCutoffToPatients
 }: {
   summary: MedicalInstitutionCutoffSummary;
   onSaveCutoff: (
     patient: Patient,
     institution: MedicalInstitution,
-    values: { previousCutoffDate: string; prescriptionDays: number }
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string }
   ) => Promise<void>;
+  onApplyCutoffToPatients: (
+    institution: MedicalInstitution,
+    patients: Patient[],
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string }
+  ) => Promise<number>;
 }) {
+  const [bulkPreviousCutoffDate, setBulkPreviousCutoffDate] = useState("");
+  const [bulkPrescriptionDays, setBulkPrescriptionDays] = useState("");
+  const [bulkNextCutoffDate, setBulkNextCutoffDate] = useState("");
+  const [bulkMessage, setBulkMessage] = useState("");
+  const canBulkApply = Boolean(summary.institution && summary.rows.length && bulkNextCutoffDate);
+
+  useEffect(() => {
+    if (!bulkMessage) return undefined;
+    const timer = window.setTimeout(() => setBulkMessage(""), 2200);
+    return () => window.clearTimeout(timer);
+  }, [bulkMessage]);
+
+  const applyToPatients = async () => {
+    if (!summary.institution || !canBulkApply) return;
+    const updatedCount = await onApplyCutoffToPatients(
+      summary.institution,
+      summary.rows.map((row) => row.patient),
+      {
+        previousCutoffDate: bulkPreviousCutoffDate,
+        prescriptionDays: Number(bulkPrescriptionDays) || 0,
+        nextCutoffDate: bulkNextCutoffDate
+      }
+    );
+    setBulkMessage(`${updatedCount}名の切日に反映しました`);
+  };
+
+  const updateBulkPreviousCutoffDate = (value: string) => {
+    setBulkPreviousCutoffDate(value);
+    const calculated = calcNextCutoffDate(value, Number(bulkPrescriptionDays) || 0);
+    if (calculated) setBulkNextCutoffDate(calculated);
+  };
+
+  const updateBulkPrescriptionDays = (value: string) => {
+    setBulkPrescriptionDays(value);
+    const calculated = calcNextCutoffDate(bulkPreviousCutoffDate, Number(value) || 0);
+    if (calculated) setBulkNextCutoffDate(calculated);
+  };
+
   return (
     <article className="rounded-md border border-slate-200 bg-white p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1167,6 +1257,51 @@ function MedicalInstitutionCutoffSummaryCard({
         <span className="rounded-md bg-blue-50 px-2 py-1 text-blue-800">
           次回往診：{summary.earliestNextVisitDate ? formatDateLabel(summary.earliestNextVisitDate) : "未設定"}
         </span>
+      </div>
+
+      <div className="mt-3 rounded-md border border-care-100 bg-care-50 p-3">
+        <div className="grid gap-2 md:grid-cols-[1fr_7rem_1fr_auto] md:items-end">
+          <label className="grid gap-1">
+            <span className="text-xs font-semibold text-care-900">対象患者へ反映する前回切日</span>
+            <input
+              type="date"
+              className="min-h-10 rounded-md border border-care-200 bg-white px-2"
+              value={bulkPreviousCutoffDate}
+              onChange={(event) => updateBulkPreviousCutoffDate(event.target.value)}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-xs font-semibold text-care-900">日数</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              className="min-h-10 rounded-md border border-care-200 bg-white px-2"
+              value={bulkPrescriptionDays}
+              onChange={(event) => updateBulkPrescriptionDays(event.target.value)}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-xs font-semibold text-care-900">次回切日</span>
+            <input
+              type="date"
+              className="min-h-10 rounded-md border border-care-200 bg-white px-2 font-bold text-rose-800"
+              value={bulkNextCutoffDate}
+              onChange={(event) => setBulkNextCutoffDate(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void applyToPatients()}
+            disabled={!canBulkApply}
+            className={[
+              "min-h-10 rounded-md px-3 font-semibold",
+              canBulkApply ? "bg-care-700 text-white" : "bg-slate-200 text-slate-500"
+            ].join(" ")}
+          >
+            対象患者へ反映
+          </button>
+        </div>
+        {bulkMessage ? <p className="mt-2 text-sm font-semibold text-care-900">{bulkMessage}</p> : null}
       </div>
 
       <div className="mt-2 max-h-64 space-y-1 overflow-auto pr-1">
@@ -1194,19 +1329,25 @@ function MedicalInstitutionCutoffRow({
   onSaveCutoff: (
     patient: Patient,
     institution: MedicalInstitution,
-    values: { previousCutoffDate: string; prescriptionDays: number }
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string }
   ) => Promise<void>;
 }) {
   const [previousCutoffDate, setPreviousCutoffDate] = useState(row.previousCutoffDate);
   const [prescriptionDays, setPrescriptionDays] = useState(row.prescriptionDays ? String(row.prescriptionDays) : "");
+  const [nextCutoffDate, setNextCutoffDate] = useState(
+    row.cutoffDate || calcNextCutoffDate(row.previousCutoffDate, row.prescriptionDays)
+  );
   const [saved, setSaved] = useState(false);
-  const nextCutoffDate = calcNextCutoffDate(previousCutoffDate, Number(prescriptionDays) || 0);
-  const isDirty = previousCutoffDate !== row.previousCutoffDate || Number(prescriptionDays || 0) !== row.prescriptionDays;
+  const isDirty =
+    previousCutoffDate !== row.previousCutoffDate ||
+    Number(prescriptionDays || 0) !== row.prescriptionDays ||
+    nextCutoffDate !== row.cutoffDate;
 
   useEffect(() => {
     setPreviousCutoffDate(row.previousCutoffDate);
     setPrescriptionDays(row.prescriptionDays ? String(row.prescriptionDays) : "");
-  }, [row.previousCutoffDate, row.prescriptionDays]);
+    setNextCutoffDate(row.cutoffDate || calcNextCutoffDate(row.previousCutoffDate, row.prescriptionDays));
+  }, [row.previousCutoffDate, row.prescriptionDays, row.cutoffDate]);
 
   useEffect(() => {
     if (!saved) return undefined;
@@ -1217,13 +1358,26 @@ function MedicalInstitutionCutoffRow({
   const save = async () => {
     await onSaveCutoff(row.patient, row.institution, {
       previousCutoffDate,
-      prescriptionDays: Number(prescriptionDays) || 0
+      prescriptionDays: Number(prescriptionDays) || 0,
+      nextCutoffDate
     });
     setSaved(true);
   };
 
+  const updatePreviousCutoffDate = (value: string) => {
+    setPreviousCutoffDate(value);
+    const calculated = calcNextCutoffDate(value, Number(prescriptionDays) || 0);
+    if (calculated) setNextCutoffDate(calculated);
+  };
+
+  const updatePrescriptionDays = (value: string) => {
+    setPrescriptionDays(value);
+    const calculated = calcNextCutoffDate(previousCutoffDate, Number(value) || 0);
+    if (calculated) setNextCutoffDate(calculated);
+  };
+
   return (
-    <div className="grid gap-2 rounded-md border border-slate-100 bg-slate-50 px-2 py-2 text-sm lg:grid-cols-[minmax(7rem,1fr)_auto_9rem_5rem_8rem_auto] lg:items-end">
+    <div className="grid gap-2 rounded-md border border-slate-100 bg-slate-50 px-2 py-2 text-sm lg:grid-cols-[minmax(7rem,1fr)_auto_9rem_5rem_9rem_auto] lg:items-end">
       <div>
         <p className="font-bold text-slate-900">{row.patient.name}</p>
         <p className="text-xs font-semibold text-slate-500">
@@ -1239,7 +1393,7 @@ function MedicalInstitutionCutoffRow({
           type="date"
           className="min-h-10 rounded-md border border-slate-300 bg-white px-2"
           value={previousCutoffDate}
-          onChange={(event) => setPreviousCutoffDate(event.target.value)}
+          onChange={(event) => updatePreviousCutoffDate(event.target.value)}
         />
       </label>
       <label className="grid gap-1">
@@ -1249,13 +1403,18 @@ function MedicalInstitutionCutoffRow({
           inputMode="numeric"
           className="min-h-10 rounded-md border border-slate-300 bg-white px-2"
           value={prescriptionDays}
-          onChange={(event) => setPrescriptionDays(event.target.value)}
+          onChange={(event) => updatePrescriptionDays(event.target.value)}
         />
       </label>
-      <div className="rounded-md bg-white px-2 py-2">
-        <p className="text-xs font-semibold text-slate-600">次回切日</p>
-        <p className="font-bold text-rose-800">{nextCutoffDate ? formatDateLabel(nextCutoffDate) : "-"}</p>
-      </div>
+      <label className="grid gap-1">
+        <span className="text-xs font-semibold text-slate-600">次回切日</span>
+        <input
+          type="date"
+          className="min-h-10 rounded-md border border-slate-300 bg-white px-2 font-bold text-rose-800"
+          value={nextCutoffDate}
+          onChange={(event) => setNextCutoffDate(event.target.value)}
+        />
+      </label>
       <button
         type="button"
         onClick={() => void save()}
@@ -1512,6 +1671,7 @@ function MedicationPatientCard({
   const cutoffSummary = getCutoffSummary(
     data.medicationClinicCutoffs.filter((cutoff) => cutoff.patientId === patient.id)
   );
+  const facilityClinicTone = getFacilityClinicCardTone(patient, data.medicalInstitutions);
   const cardTone = showAuditStatus
     ? {
         notStarted: "border-slate-200 bg-white",
@@ -1519,7 +1679,7 @@ function MedicationPatientCard({
         needsReview: "border-rose-200 bg-rose-50",
         completed: "border-care-100 bg-care-50"
       }[status]
-    : "border-slate-200 bg-white";
+    : facilityClinicTone;
 
   const content = (
     <article className={`h-full rounded-md border p-4 ${cardTone}`}>
@@ -1818,12 +1978,26 @@ function PatientDetail({
     const timestamp = nowString();
     const patientId = patient?.id || createId();
     const locationLabel = form.facilityName.trim() || "個人宅";
+    const isFacilityRPatient = locationLabel === "老人ホームR";
+    const existingFacilitySlot = patient?.facilityCalendarSlot || form.facilityCalendarSlot;
+    const facilityCalendarSlot = isFacilityRPatient
+      ? isValidFacilityCalendarSlot(existingFacilitySlot)
+        ? existingFacilitySlot
+        : getNextAvailableFacilityCalendarSlot(data.patients, patientId)
+      : undefined;
+
+    if (isFacilityRPatient && !facilityCalendarSlot) {
+      setSaved("老人ホームRカレンダーの空きマスがありません");
+      return;
+    }
+
     const payload: Patient = {
       ...form,
       id: patientId,
-      order: patient?.order ?? data.patients.length,
+      order: facilityCalendarSlot ? facilityCalendarSlot - 1 : patient?.order ?? data.patients.length,
       locationType: locationLabel === "個人宅" ? "home" : "facility",
       facilityName: locationLabel,
+      facilityCalendarSlot,
       mainMedicalInstitutionId: form.mainMedicalInstitutionId || "",
       additionalMedicalInstitutionIds: form.additionalMedicalInstitutionIds || [],
       lastVisitDate: form.lastVisitDate || "",
@@ -2997,7 +3171,7 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
   const saveInstitutionCutoff = async (
     patient: Patient,
     institution: MedicalInstitution,
-    values: { previousCutoffDate: string; prescriptionDays: number }
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string }
   ) => {
     const timestamp = nowString();
     const existing = data.medicationClinicCutoffs.find(
@@ -3009,13 +3183,47 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
       medicalInstitutionId: institution.id,
       previousCutoffDate: values.previousCutoffDate,
       prescriptionDays: Number(values.prescriptionDays) || 0,
-      nextCutoffDate: calcNextCutoffDate(values.previousCutoffDate, Number(values.prescriptionDays) || 0),
+      nextCutoffDate:
+        values.nextCutoffDate || calcNextCutoffDate(values.previousCutoffDate, Number(values.prescriptionDays) || 0),
       memo: existing?.memo || "",
       createdAt: existing?.createdAt || timestamp,
       updatedAt: timestamp
     });
     await reload();
     setSaved("切日を保存しました");
+  };
+
+  const applyInstitutionCutoffToPatients = async (
+    institution: MedicalInstitution,
+    patients: Patient[],
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string }
+  ) => {
+    const timestamp = nowString();
+    const nextCutoffDate =
+      values.nextCutoffDate || calcNextCutoffDate(values.previousCutoffDate, Number(values.prescriptionDays) || 0);
+    const cutoffs: MedicationClinicCutoff[] = patients.map((patient) => {
+      const existing = data.medicationClinicCutoffs.find(
+        (cutoff) => cutoff.patientId === patient.id && cutoff.medicalInstitutionId === institution.id
+      );
+      return {
+        id: existing?.id || createId(),
+        patientId: patient.id,
+        medicalInstitutionId: institution.id,
+        previousCutoffDate: values.previousCutoffDate,
+        prescriptionDays: Number(values.prescriptionDays) || 0,
+        nextCutoffDate,
+        memo: existing?.memo || "",
+        createdAt: existing?.createdAt || timestamp,
+        updatedAt: timestamp
+      };
+    });
+
+    if (cutoffs.length) {
+      await db.medicationClinicCutoffs.bulkPut(cutoffs);
+    }
+    await reload();
+    setSaved(`${cutoffs.length}名の切日に反映しました`);
+    return cutoffs.length;
   };
 
   return (
@@ -3100,6 +3308,7 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
           <MedicalInstitutionCutoffSummaryCard
             summary={editingCutoffSummary}
             onSaveCutoff={saveInstitutionCutoff}
+            onApplyCutoffToPatients={applyInstitutionCutoffToPatients}
           />
         ) : null}
         <aside className="rounded-md border border-slate-200 bg-white p-4">
@@ -3207,10 +3416,10 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
     : [];
   const linkedInstitutions = patient ? getPatientMedicalInstitutions(patient, data.medicalInstitutions) : [];
   const packageInstitutionOptions = linkedInstitutions.length ? linkedInstitutions : data.medicalInstitutions;
-  const cutoffInstitutions = packageInstitutionOptions;
   const patientCutoffs = patient
     ? data.medicationClinicCutoffs.filter((cutoff) => cutoff.patientId === patient.id)
     : [];
+  const cutoffInstitutions = linkedInstitutions;
   const [draft, setDraft] = useState<Omit<MedicationPackageItem, "id" | "patternId" | "order" | "createdAt" | "updatedAt">>({
     dosageForm: "tablet",
     quantity: "",
@@ -3336,12 +3545,12 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
 
   const saveClinicCutoff = async (
     institution: MedicalInstitution,
-    values: { previousCutoffDate: string; prescriptionDays: number; memo: string }
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string; memo: string }
   ) => {
     if (!patient) return;
     const timestamp = nowString();
     const existing = patientCutoffs.find((cutoff) => cutoff.medicalInstitutionId === institution.id);
-    const nextCutoffDate = calcNextCutoffDate(values.previousCutoffDate, values.prescriptionDays);
+    const nextCutoffDate = values.nextCutoffDate || calcNextCutoffDate(values.previousCutoffDate, values.prescriptionDays);
     const cutoff: MedicationClinicCutoff = {
       id: existing?.id || createId(),
       patientId: patient.id,
@@ -3620,7 +3829,7 @@ function ClinicCutoffPanel({
   cutoffs: MedicationClinicCutoff[];
   onSave: (
     institution: MedicalInstitution,
-    values: { previousCutoffDate: string; prescriptionDays: number; memo: string }
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string; memo: string }
   ) => Promise<void>;
 }) {
   const cutoffSummary = getCutoffSummary(cutoffs);
@@ -3670,37 +3879,46 @@ function ClinicCutoffEditor({
   cutoff?: MedicationClinicCutoff;
   onSave: (
     institution: MedicalInstitution,
-    values: { previousCutoffDate: string; prescriptionDays: number; memo: string }
+    values: { previousCutoffDate: string; prescriptionDays: number; nextCutoffDate: string; memo: string }
   ) => Promise<void>;
 }) {
   const [previousCutoffDate, setPreviousCutoffDate] = useState(cutoff?.previousCutoffDate || "");
   const [prescriptionDays, setPrescriptionDays] = useState(cutoff?.prescriptionDays || 0);
+  const [nextCutoffDate, setNextCutoffDate] = useState(cutoff?.nextCutoffDate || "");
   const [memo, setMemo] = useState(cutoff?.memo || "");
-  const nextCutoffDate = calcNextCutoffDate(previousCutoffDate, Number(prescriptionDays) || 0);
 
   useEffect(() => {
     setPreviousCutoffDate(cutoff?.previousCutoffDate || "");
     setPrescriptionDays(cutoff?.prescriptionDays || 0);
+    setNextCutoffDate(cutoff?.nextCutoffDate || "");
     setMemo(cutoff?.memo || "");
   }, [cutoff]);
+
+  const updatePreviousCutoffDate = (value: string) => {
+    setPreviousCutoffDate(value);
+    const calculated = calcNextCutoffDate(value, Number(prescriptionDays) || 0);
+    if (calculated) setNextCutoffDate(calculated);
+  };
+
+  const updatePrescriptionDays = (value: string) => {
+    const days = Number(value) || 0;
+    setPrescriptionDays(days);
+    const calculated = calcNextCutoffDate(previousCutoffDate, days);
+    if (calculated) setNextCutoffDate(calculated);
+  };
 
   return (
     <section className="rounded-md border border-slate-200 bg-white p-4">
       <h3 className="text-xl font-bold">{institution.name}</h3>
       <div className="mt-3 grid gap-3">
-        <DateInput label="前回切日" value={previousCutoffDate} onChange={setPreviousCutoffDate} />
+        <DateInput label="前回切日" value={previousCutoffDate} onChange={updatePreviousCutoffDate} />
         <TextInput
           label="処方日数"
           type="number"
           value={prescriptionDays ? String(prescriptionDays) : ""}
-          onChange={(value) => setPrescriptionDays(Number(value) || 0)}
+          onChange={updatePrescriptionDays}
         />
-        <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-          <p className="font-semibold text-slate-700">次回切日</p>
-          <p className="mt-2 text-2xl font-bold">
-            {nextCutoffDate ? formatDateLabel(nextCutoffDate) : "前回切日と処方日数を入力"}
-          </p>
-        </div>
+        <DateInput label="次回切日" value={nextCutoffDate} onChange={setNextCutoffDate} />
         <label className="grid gap-1">
           <span className="font-semibold text-slate-700">メモ</span>
           <textarea
@@ -3711,7 +3929,7 @@ function ClinicCutoffEditor({
         </label>
         <button
           type="button"
-          onClick={() => void onSave(institution, { previousCutoffDate, prescriptionDays, memo })}
+          onClick={() => void onSave(institution, { previousCutoffDate, prescriptionDays, nextCutoffDate, memo })}
           className="touch-target rounded-md bg-care-700 px-5 py-3 font-semibold text-white"
         >
           切日を保存
@@ -4182,6 +4400,24 @@ function getFacilityCalendarSlots(patients: Patient[]) {
   return slots;
 }
 
+function isValidFacilityCalendarSlot(slot?: number) {
+  return Boolean(slot && slot >= 1 && slot <= 20);
+}
+
+function getNextAvailableFacilityCalendarSlot(patients: Patient[], currentPatientId = "") {
+  const occupiedSlots = new Set(
+    patients
+      .filter((patient) => patient.id !== currentPatientId && patient.facilityName === "老人ホームR")
+      .map((patient) => patient.facilityCalendarSlot)
+      .filter(isValidFacilityCalendarSlot)
+  );
+
+  for (let slot = 1; slot <= 20; slot += 1) {
+    if (!occupiedSlots.has(slot)) return slot;
+  }
+  return undefined;
+}
+
 function getLatestMedicationCalendar(patientId: string, calendars: MedicationCalendar[]) {
   return calendars
     .filter((calendar) => calendar.patientId === patientId)
@@ -4341,6 +4577,17 @@ function getPatientMedicalInstitutions(patient: Patient, institutions: MedicalIn
   return ids
     .map((id) => institutions.find((institution) => institution.id === id))
     .filter((institution): institution is MedicalInstitution => Boolean(institution));
+}
+
+function getFacilityClinicCardTone(patient: Patient, institutions: MedicalInstitution[]) {
+  const linkedInstitutions = getPatientMedicalInstitutions(patient, institutions);
+  const hasTadaoka = linkedInstitutions.some((institution) => institution.name.includes("ただおかメディカル"));
+  const hasNakayama = linkedInstitutions.some((institution) => institution.name.includes("なかやまメンタル"));
+
+  if (hasTadaoka && hasNakayama) return "border-violet-300 bg-violet-100";
+  if (hasTadaoka) return "border-red-300 bg-red-50";
+  if (hasNakayama) return "border-sky-300 bg-sky-50";
+  return "border-emerald-200 bg-emerald-50";
 }
 
 function getMedicalInstitutionPatientCount(institutionId: string, patients: Patient[]) {
