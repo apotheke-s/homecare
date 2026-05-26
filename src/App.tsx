@@ -367,6 +367,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [headerHidden, setHeaderHidden] = useState(false);
 
   const reload = async () => {
     const [
@@ -427,6 +428,38 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let lastScrollY = window.scrollY;
+    let ticking = false;
+
+    const handleScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(() => {
+        const currentScrollY = window.scrollY;
+        const delta = currentScrollY - lastScrollY;
+
+        if (currentScrollY < 80 || delta < -6) {
+          setHeaderHidden(false);
+        } else if (delta > 8 && currentScrollY > 120) {
+          setHeaderHidden(true);
+        }
+
+        lastScrollY = currentScrollY;
+        ticking = false;
+      });
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (menuOpen) {
+      setHeaderHidden(false);
+    }
+  }, [menuOpen]);
+
   const dismissNotice = () => setNotice("");
   const applyUpdate = async () => {
     if (window.updateHomecareServiceWorker) {
@@ -439,7 +472,12 @@ function App() {
   return (
     <BrowserRouter basename={routerBaseName}>
       <div className="min-h-screen bg-slate-50 text-slate-900">
-        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <header
+          className={[
+            "sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur transition-transform duration-200 ease-out",
+            headerHidden && !menuOpen ? "-translate-y-full" : "translate-y-0"
+          ].join(" ")}
+        >
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2 md:px-5">
             <Link to="/" className="flex min-h-11 shrink-0 items-center gap-2.5">
               <div className="flex h-10 w-10 items-center justify-center rounded-md bg-care-700 text-white">
