@@ -440,14 +440,14 @@ function App() {
     <BrowserRouter basename={routerBaseName}>
       <div className="min-h-screen bg-slate-50 text-slate-900">
         <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
-          <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 md:px-6">
-            <Link to="/" className="flex min-h-11 items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-md bg-care-700 text-white">
-                <Home size={24} aria-hidden="true" />
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2 md:px-5">
+            <Link to="/" className="flex min-h-11 shrink-0 items-center gap-2.5">
+              <div className="flex h-10 w-10 items-center justify-center rounded-md bg-care-700 text-white">
+                <Home size={21} aria-hidden="true" />
               </div>
               <div>
-                <p className="text-xl font-bold leading-tight">在宅サポートノート</p>
-                <p className="text-sm text-slate-600">オフライン在宅PWA</p>
+                <p className="text-lg font-bold leading-tight">在宅サポートノート</p>
+                <p className="text-xs text-slate-600">オフライン在宅PWA</p>
               </div>
             </Link>
             <button
@@ -458,7 +458,7 @@ function App() {
             >
               <Menu size={24} />
             </button>
-            <nav className="hidden gap-2 md:flex" aria-label="主要メニュー">
+            <nav className="hidden flex-1 flex-wrap justify-end gap-1 md:flex" aria-label="主要メニュー">
               <NavItems />
             </nav>
           </div>
@@ -564,13 +564,13 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
       onClick={onNavigate}
       className={({ isActive }) =>
         [
-          "touch-target inline-flex items-center gap-2 rounded-md px-4 py-2 text-base font-semibold",
+          "touch-target inline-flex items-center gap-1.5 rounded-md px-2.5 py-2 text-sm font-semibold lg:px-3",
           isActive ? "bg-care-700 text-white" : "text-slate-700 hover:bg-slate-100"
         ].join(" ")
       }
       end={to === "/"}
     >
-      <Icon size={20} />
+      <Icon size={17} />
       {label}
     </NavLink>
   ));
