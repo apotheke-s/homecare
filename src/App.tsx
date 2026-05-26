@@ -160,6 +160,8 @@ const dosageFormLabels: Record<DosageForm, string> = {
   other: "その他"
 };
 
+const packageQuantityOptions = ["0.5", "1", "2", "3", "4", "5"];
+
 const packageFlagLabels = {
   isAdded: "追加",
   isChanged: "変更",
@@ -3753,7 +3755,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                       </span>
                     ) : null}
                   </div>
-                  <div className="grid gap-3 md:grid-cols-[140px_110px_minmax(14rem,24rem)]">
+                  <div className="grid gap-3 md:grid-cols-[140px_88px_minmax(12rem,20rem)]">
                     <label className="grid gap-1">
                       <span className="font-semibold text-slate-700">剤形</span>
                       <select
@@ -3770,7 +3772,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                         ))}
                       </select>
                     </label>
-                    <DeferredTextInput
+                    <QuantityDeferredInput
                       label="数量"
                       value={item.quantity}
                       onCommit={(value) => void updatePackageItem(item, { quantity: value })}
@@ -3845,7 +3847,11 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                     ))}
                   </select>
                 </label>
-                <TextInput label="数量" value={draft.quantity} onChange={(value) => setDraft((current) => ({ ...current, quantity: value }))} />
+                <QuantityInput
+                  label="数量"
+                  value={draft.quantity}
+                  onChange={(value) => setDraft((current) => ({ ...current, quantity: value }))}
+                />
                 <TextInput label="薬剤名" value={draft.medicineName} onChange={(value) => setDraft((current) => ({ ...current, medicineName: value }))} />
                 <PackageFlagCheckboxes
                   label="区分"
@@ -4350,22 +4356,36 @@ function TextInput({
   label,
   value,
   onChange,
-  type = "text"
+  type = "text",
+  options,
+  inputMode
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  options?: string[];
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
 }) {
+  const listId = useId();
   return (
     <label className="grid gap-1">
       <span className="font-semibold text-slate-700">{label}</span>
       <input
         type={type}
+        list={options?.length ? listId : undefined}
+        inputMode={inputMode}
         className="touch-target rounded-md border border-slate-300 bg-white px-3 py-3"
         value={value}
         onChange={(event) => onChange(event.target.value)}
       />
+      {options?.length ? (
+        <datalist id={listId}>
+          {options.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+      ) : null}
     </label>
   );
 }
@@ -4374,16 +4394,23 @@ function DeferredTextInput({
   label,
   value,
   onCommit,
-  type = "text"
+  type = "text",
+  options,
+  inputMode,
+  compact = false
 }: {
   label: string;
   value: string;
   onCommit: (value: string) => void;
   type?: string;
+  options?: string[];
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  compact?: boolean;
 }) {
   const [draft, setDraft] = useState(value);
   const isDirty = draft !== value;
   const inputId = useId();
+  const listId = useId();
 
   useEffect(() => {
     setDraft(value);
@@ -4397,17 +4424,17 @@ function DeferredTextInput({
 
   return (
     <div className="grid gap-1">
-      <div className="flex min-h-7 items-center justify-between gap-2">
+      <div className={compact ? "grid min-h-7 gap-1" : "flex min-h-7 items-center justify-between gap-2"}>
         <label htmlFor={inputId} className="font-semibold text-slate-700">
           {label}
         </label>
         {isDirty ? (
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-amber-700">変更あり</span>
+          <div className={compact ? "flex items-center" : "flex items-center gap-2"}>
+            {compact ? null : <span className="text-sm font-semibold text-amber-700">変更あり</span>}
             <button
               type="button"
               onClick={commit}
-              className="rounded-md bg-amber-100 px-3 py-1 text-sm font-semibold text-amber-800"
+              className="rounded-md bg-amber-100 px-2 py-1 text-sm font-semibold text-amber-800"
             >
               保存
             </button>
@@ -4417,8 +4444,10 @@ function DeferredTextInput({
       <input
         id={inputId}
         type={type}
+        list={options?.length ? listId : undefined}
+        inputMode={inputMode}
         className={[
-          "touch-target rounded-md border bg-white px-3 py-3",
+          "touch-target min-w-0 rounded-md border bg-white px-3 py-3",
           isDirty ? "border-amber-400 ring-2 ring-amber-100" : "border-slate-300"
         ].join(" ")}
         value={draft}
@@ -4430,6 +4459,131 @@ function DeferredTextInput({
           }
         }}
       />
+      {options?.length ? (
+        <datalist id={listId}>
+          {options.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+      ) : null}
+    </div>
+  );
+}
+
+function QuantityInput({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const selectValue = packageQuantityOptions.includes(value) ? value : "";
+  return (
+    <label className="grid gap-1">
+      <span className="font-semibold text-slate-700">{label}</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        className="touch-target min-w-0 rounded-md border border-slate-300 bg-white px-3 py-3"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <select
+        className="min-h-10 rounded-md border border-slate-300 bg-white px-2 py-2 text-sm"
+        value={selectValue}
+        onChange={(event) => onChange(event.target.value)}
+        aria-label={`${label}候補`}
+      >
+        <option value="">候補</option>
+        {packageQuantityOptions.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function QuantityDeferredInput({
+  label,
+  value,
+  onCommit
+}: {
+  label: string;
+  value: string;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const isDirty = draft !== value;
+  const inputId = useId();
+  const selectValue = packageQuantityOptions.includes(draft) ? draft : "";
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = () => {
+    if (draft !== value) {
+      onCommit(draft);
+    }
+  };
+
+  const selectQuantity = (nextValue: string) => {
+    setDraft(nextValue);
+    if (nextValue !== value) {
+      onCommit(nextValue);
+    }
+  };
+
+  return (
+    <div className="grid gap-1">
+      <div className="grid min-h-7 gap-1">
+        <label htmlFor={inputId} className="font-semibold text-slate-700">
+          {label}
+        </label>
+        {isDirty ? (
+          <button
+            type="button"
+            onClick={commit}
+            className="w-fit rounded-md bg-amber-100 px-2 py-1 text-sm font-semibold text-amber-800"
+          >
+            保存
+          </button>
+        ) : null}
+      </div>
+      <input
+        id={inputId}
+        type="text"
+        inputMode="decimal"
+        className={[
+          "touch-target min-w-0 rounded-md border bg-white px-3 py-3",
+          isDirty ? "border-amber-400 ring-2 ring-amber-100" : "border-slate-300"
+        ].join(" ")}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+      />
+      <select
+        className="min-h-10 rounded-md border border-slate-300 bg-white px-2 py-2 text-sm"
+        value={selectValue}
+        onChange={(event) => selectQuantity(event.target.value)}
+        aria-label={`${label}候補`}
+      >
+        <option value="">候補</option>
+        {packageQuantityOptions.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
