@@ -3512,7 +3512,6 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
       )
     : [];
   const linkedInstitutions = patient ? getPatientMedicalInstitutions(patient, data.medicalInstitutions) : [];
-  const packageInstitutionOptions = linkedInstitutions.length ? linkedInstitutions : data.medicalInstitutions;
   const patientCutoffs = patient
     ? data.medicationClinicCutoffs.filter((cutoff) => cutoff.patientId === patient.id)
     : [];
@@ -3754,7 +3753,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                       </span>
                     ) : null}
                   </div>
-                  <div className="grid gap-3 md:grid-cols-[140px_120px_1fr_1fr]">
+                  <div className="grid gap-3 md:grid-cols-[150px_120px_minmax(0,1fr)]">
                     <label className="grid gap-1">
                       <span className="font-semibold text-slate-700">剤形</span>
                       <select
@@ -3781,12 +3780,6 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                       value={item.medicineName}
                       onCommit={(value) => void updatePackageItem(item, { medicineName: value })}
                     />
-                    <MedicalInstitutionSelect
-                      label="医療機関"
-                      value={item.clinicName}
-                      institutions={packageInstitutionOptions}
-                      onChange={(value) => void updatePackageItem(item, { clinicName: value })}
-                    />
                   </div>
                   <div className="mt-3">
                     <PackageFlagCheckboxes
@@ -3795,7 +3788,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                       onChange={(key, checked) => void updatePackageItem(item, getPackageFlagPatch(item, key, checked))}
                     />
                   </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+                  <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
                     <DeferredTextInput
                       label="メモ"
                       value={item.memo}
@@ -3854,12 +3847,6 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                 </label>
                 <TextInput label="数量" value={draft.quantity} onChange={(value) => setDraft((current) => ({ ...current, quantity: value }))} />
                 <TextInput label="薬剤名" value={draft.medicineName} onChange={(value) => setDraft((current) => ({ ...current, medicineName: value }))} />
-                <MedicalInstitutionSelect
-                  label="医療機関"
-                  value={draft.clinicName}
-                  institutions={packageInstitutionOptions}
-                  onChange={(value) => setDraft((current) => ({ ...current, clinicName: value }))}
-                />
                 <PackageFlagCheckboxes
                   label="区分"
                   values={getPackageFlags(draft)}
