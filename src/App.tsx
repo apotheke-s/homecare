@@ -3753,7 +3753,7 @@ function PackageAuditEditor({ data, reload }: { data: AppData; reload: () => Pro
                       </span>
                     ) : null}
                   </div>
-                  <div className="grid gap-3 md:grid-cols-[150px_120px_minmax(0,1fr)]">
+                  <div className="grid gap-3 md:grid-cols-[140px_110px_minmax(14rem,24rem)]">
                     <label className="grid gap-1">
                       <span className="font-semibold text-slate-700">剤形</span>
                       <select
