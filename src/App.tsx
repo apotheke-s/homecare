@@ -3364,7 +3364,7 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
             />
             <input
               className="touch-target w-full rounded-md border border-slate-300 bg-white py-3 pl-10 pr-3 text-base"
-              placeholder="医療機関名・電話・FAXで検索"
+              placeholder="医療機関名・フリガナで検索"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -3392,20 +3392,18 @@ function MedicalInstitutionsPage({ data, reload }: { data: AppData; reload: () =
                   type="button"
                   onClick={() => setEditingId(institution.id)}
                   className={[
-                    "grid w-full gap-3 px-4 py-4 text-left hover:bg-slate-50 md:grid-cols-[1fr_110px_110px_130px_130px_100px_90px]",
+                    "grid w-full gap-3 px-4 py-4 text-left hover:bg-slate-50 md:grid-cols-[minmax(18rem,1fr)_96px_96px_92px_72px]",
                     editingId === institution.id ? "bg-care-50" : "bg-white"
                   ].join(" ")}
                 >
-                  <span>
-                    <span className="block text-lg font-bold">{institution.name}</span>
+                  <span className="min-w-0">
+                    <span className="block text-xl font-bold leading-snug">{institution.name}</span>
                     <span className="text-sm text-slate-600">{institution.kana}</span>
                   </span>
                   <span className="self-center font-semibold">{medicalInstitutionTypeLabels[institution.type]}</span>
                   <span className="self-center font-semibold">
                     {institution.homeVisitWeekday ? homeVisitWeekdayLabels[institution.homeVisitWeekday] : "-"}
                   </span>
-                  <span className="self-center">{institution.phone || "-"}</span>
-                  <span className="self-center">{institution.fax || "-"}</span>
                   <span className="self-center">
                     {institution.isMainHomeCareClinic ? <Badge tone="care">対象</Badge> : <Badge tone="slate">-</Badge>}
                   </span>
