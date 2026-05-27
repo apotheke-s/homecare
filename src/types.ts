@@ -130,7 +130,7 @@ export type MedicationTiming =
   | "external"
   | "other";
 
-export type DosageForm = "tablet" | "powder" | "magnesium" | "aspark" | "patch" | "kampo" | "other";
+export type DosageForm = "tablet" | "beforeMeal" | "powder" | "magnesium" | "aspark" | "patch" | "kampo" | "other";
 export type MedicationPackageChangeType = "none" | "added" | "increased" | "decreased" | "temporary";
 
 export interface MedicationCalendar {

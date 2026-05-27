@@ -152,6 +152,7 @@ const medicationEditableTimings: MedicationTiming[] = [
 
 const dosageFormLabels: Record<DosageForm, string> = {
   tablet: "錠",
+  beforeMeal: "前",
   powder: "粉",
   magnesium: "カマグ",
   aspark: "アスK",
@@ -4839,6 +4840,8 @@ function formatPackageItem(item: MedicationPackageItem) {
       : `${medicineName}（${quantityText}）`
     : item.dosageForm === "tablet"
       ? `錠（${quantityText}）`
+      : item.dosageForm === "beforeMeal"
+        ? `前（${quantityText}）`
       : item.dosageForm === "powder"
         ? item.quantity
           ? `粉（${quantityText}）`
@@ -4956,12 +4959,13 @@ function getPackageInstitutionRank(
 function getDosageFormRank(dosageForm: DosageForm) {
   const ranks: Record<DosageForm, number> = {
     tablet: 0,
-    powder: 1,
-    magnesium: 2,
-    aspark: 3,
-    patch: 4,
-    kampo: 5,
-    other: 6
+    beforeMeal: 1,
+    powder: 2,
+    magnesium: 3,
+    aspark: 4,
+    patch: 5,
+    kampo: 6,
+    other: 7
   };
   return ranks[dosageForm];
 }
